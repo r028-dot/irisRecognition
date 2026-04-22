@@ -1,0 +1,7 @@
+{
+  "port": 9000,
+  "numWorkers": 8,
+  "hammingThreshold": 0.32,
+  "normalizedWidth": 512,
+  "normalizedHeight": 64
+}
