@@ -32,14 +32,20 @@ GO
 
 -- ------------------------------------------------------------
 -- Table: IrisFeatures
--- Stores serialized IrisCode (bits[256] || mask[256] = 512 bytes)
+-- One row per user per eye.  Up to 3 enrollment templates are
+-- stored in three columns so that the DB enforces exactly one
+-- record per (UserID, Eye) pair.
+-- Each IrisCodeN = bits[256] || mask[256] = 512 bytes.
+-- IrisCode1 is mandatory; IrisCode2 / IrisCode3 are optional.
 -- Eye: 0 = Left, 1 = Right
 -- ------------------------------------------------------------
 CREATE TABLE IrisFeatures (
     FeatureID       INT             IDENTITY(1,1)   PRIMARY KEY,
     UserID          INT             NOT NULL,
     Eye             TINYINT         NOT NULL        CHECK (Eye IN (0, 1)),
-    IrisCodeData    VARBINARY(512)  NOT NULL,       -- bits[256] || mask[256]
+    IrisCode1       VARBINARY(512)  NOT NULL,       -- primary template
+    IrisCode2       VARBINARY(512)  NULL,           -- 2nd enrollment image (optional)
+    IrisCode3       VARBINARY(512)  NULL,           -- 3rd enrollment image (optional)
     RegisteredAt    DATETIME2       NOT NULL        DEFAULT GETDATE(),
 
     CONSTRAINT FK_IrisFeatures_Users
@@ -74,13 +80,17 @@ GO
 --  Stored Procedures
 -- ============================================================
 
--- Enroll a new user with both iris codes (upserts if passport already exists)
+-- Enroll a new user with both iris codes (up to 3 templates per eye)
 CREATE OR ALTER PROCEDURE sp_EnrollUser
     @PassportNumber NVARCHAR(20),
     @FullName       NVARCHAR(100),
     @Nationality    NVARCHAR(50),
-    @IrisCodeLeft   VARBINARY(512),
-    @IrisCodeRight  VARBINARY(512),
+    @IrisLeft1      VARBINARY(512),         -- mandatory
+    @IrisLeft2      VARBINARY(512) = NULL,  -- optional 2nd left template
+    @IrisLeft3      VARBINARY(512) = NULL,  -- optional 3rd left template
+    @IrisRight1     VARBINARY(512),         -- mandatory
+    @IrisRight2     VARBINARY(512) = NULL,  -- optional 2nd right template
+    @IrisRight3     VARBINARY(512) = NULL,  -- optional 3rd right template
     @NewUserID      INT OUTPUT
 AS
 BEGIN
@@ -95,23 +105,27 @@ BEGIN
 
         SELECT @NewUserID = UserID FROM Users WHERE PassportNumber = @PassportNumber;
 
-        -- Upsert left eye
+        -- Upsert left eye — all 3 templates in one row
         MERGE IrisFeatures AS target
         USING (SELECT @NewUserID AS UserID, CAST(0 AS TINYINT) AS Eye) AS src
         ON target.UserID = src.UserID AND target.Eye = src.Eye
         WHEN MATCHED THEN
-            UPDATE SET IrisCodeData = @IrisCodeLeft, RegisteredAt = GETDATE()
+            UPDATE SET IrisCode1 = @IrisLeft1, IrisCode2 = @IrisLeft2,
+                       IrisCode3 = @IrisLeft3, RegisteredAt = GETDATE()
         WHEN NOT MATCHED THEN
-            INSERT (UserID, Eye, IrisCodeData) VALUES (@NewUserID, 0, @IrisCodeLeft);
+            INSERT (UserID, Eye, IrisCode1, IrisCode2, IrisCode3)
+            VALUES (@NewUserID, 0, @IrisLeft1, @IrisLeft2, @IrisLeft3);
 
-        -- Upsert right eye
+        -- Upsert right eye — all 3 templates in one row
         MERGE IrisFeatures AS target
         USING (SELECT @NewUserID AS UserID, CAST(1 AS TINYINT) AS Eye) AS src
         ON target.UserID = src.UserID AND target.Eye = src.Eye
         WHEN MATCHED THEN
-            UPDATE SET IrisCodeData = @IrisCodeRight, RegisteredAt = GETDATE()
+            UPDATE SET IrisCode1 = @IrisRight1, IrisCode2 = @IrisRight2,
+                       IrisCode3 = @IrisRight3, RegisteredAt = GETDATE()
         WHEN NOT MATCHED THEN
-            INSERT (UserID, Eye, IrisCodeData) VALUES (@NewUserID, 1, @IrisCodeRight);
+            INSERT (UserID, Eye, IrisCode1, IrisCode2, IrisCode3)
+            VALUES (@NewUserID, 1, @IrisRight1, @IrisRight2, @IrisRight3);
 
         COMMIT TRANSACTION;
     END TRY
@@ -122,7 +136,7 @@ BEGIN
 END;
 GO
 
--- Load a user's data + both iris codes by passport number
+-- Load a user's data + iris codes by passport number
 CREATE OR ALTER PROCEDURE sp_GetUserByPassport
     @PassportNumber NVARCHAR(20)
 AS
@@ -134,7 +148,9 @@ BEGIN
         u.FullName,
         u.Nationality,
         f.Eye,
-        f.IrisCodeData
+        f.IrisCode1,
+        f.IrisCode2,
+        f.IrisCode3
     FROM Users u
     JOIN IrisFeatures f ON f.UserID = u.UserID
     WHERE u.PassportNumber = @PassportNumber AND u.IsActive = 1;

@@ -18,12 +18,14 @@ public:
                       const std::vector<uint8_t>& imageData,
                       int eye);
 
-    // Enroll: extract features from both eye images and persist to DB.
+    // Enroll: extract features from eye images and persist to DB.
+    // imagesLeft / imagesRight: 1–3 images each (first is mandatory).
+    // All templates are stored in one DB row per eye.
     AuthResult enroll(const std::string& passportNumber,
                       const std::string& fullName,
                       const std::string& nationality,
-                      const std::vector<uint8_t>& imageDataLeft,
-                      const std::vector<uint8_t>& imageDataRight);
+                      const std::vector<std::vector<uint8_t>>& imagesLeft,
+                      const std::vector<std::vector<uint8_t>>& imagesRight);
 
 private:
     std::shared_ptr<DatabaseManager> m_db;

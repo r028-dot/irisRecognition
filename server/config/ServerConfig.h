@@ -13,12 +13,13 @@ struct ServerConfig {
     int         normalizedWidth   = 512;
     int         normalizedHeight  = 64;
 
-    // Database (ction string)
+    // Database connection string
     std::wstring dbConnectionString =
         L"DRIVER={ODBC Driver 17 for SQL Server};"
-        L"SERVER=.\\SQLEXPRESS;"
+        L"SERVER=lpc:.\\SQLEXPRESS;"
         L"DATABASE=IrisRecognitionDB;"
-        L"Trusted_Connection=yes;";
+        L"Trusted_Connection=yes;"
+        L"Connection Timeout=5;";
 
     // Loads all fields from a JSON file.  Throws std::runtime_error on failure.
     static ServerConfig loadFromFile(const std::string& jsonPath);

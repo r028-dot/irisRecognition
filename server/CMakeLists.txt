@@ -55,3 +55,40 @@ if(MSVC)
         NOMINMAX
     )
 endif()
+
+# ── EnrollTool ───────────────────────────────────────────────────────────────
+# Standalone enrollment utility: reads MMU BMP images and enrolls users into DB.
+set(ENROLL_SOURCES
+    enroll_tool.cpp
+    config/ServerConfig.cpp
+    database/DatabaseManager.cpp
+    iris/FeatureExtractor.cpp
+    iris/IrisMatcher.cpp
+    iris/IrisProcessor.cpp
+    iris/Normalization.cpp
+    security/Encryptor.cpp
+    utils/Logger.cpp
+)
+
+add_executable(EnrollTool ${ENROLL_SOURCES})
+
+target_include_directories(EnrollTool PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+    ${OPENSSL_INCLUDE_DIR}
+)
+
+target_link_libraries(EnrollTool PRIVATE
+    ${OpenCV_LIBS}
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    nlohmann_json::nlohmann_json
+    ${ODBC_LIBS}
+)
+
+if(MSVC)
+    target_compile_definitions(EnrollTool PRIVATE
+        _CRT_SECURE_NO_WARNINGS
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+endif()

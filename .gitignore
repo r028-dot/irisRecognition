@@ -1,7 +1,13 @@
 # Build directories
 build/
+build2/
 out/
 cmake-build-*/
+
+# Build logs
+build_out.txt
+cmake2.txt
+cmake_out.txt
 
 # Compiled output
 *.o

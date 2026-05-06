@@ -20,6 +20,10 @@ DatabaseManager::DatabaseManager(const std::wstring& connStr)
     checkRC(SQLAllocHandle(SQL_HANDLE_DBC, m_hEnv, &m_hDbc),
             m_hEnv, SQL_HANDLE_ENV, "Alloc DBC");
 
+    // Set a 10-second login timeout so a stale connection fails fast
+    SQLSetConnectAttr(m_hDbc, SQL_ATTR_LOGIN_TIMEOUT,
+                      reinterpret_cast<SQLPOINTER>(10), 0);
+
     SQLWCHAR    outStr[1024] = {};
     SQLSMALLINT outLen       = 0;
     SQLRETURN   rc = SQLDriverConnectW(
@@ -42,24 +46,26 @@ DatabaseManager::~DatabaseManager()
 }
 
 // ---------------------------------------------------------------
-// enrollUser
+// enrollUser  (up to 3 templates per eye, stored in one row)
 // ---------------------------------------------------------------
 int DatabaseManager::enrollUser(const std::string& passportNumber,
                                 const std::string& fullName,
                                 const std::string& nationality,
-                                const IrisCode& irisLeft,
-                                const IrisCode& irisRight)
+                                const std::vector<IrisCode>& irisLeft,
+                                const std::vector<IrisCode>& irisRight)
 {
+    if (irisLeft.empty() || irisRight.empty())
+        throw std::runtime_error("enrollUser: at least one template per eye is required");
+
     SQLHSTMT hStmt = allocStmt();
 
     const wchar_t* sql =
-        L"EXEC sp_EnrollUser "
-        L"@PassportNumber=?, @FullName=?, @Nationality=?, "
-        L"@IrisCodeLeft=?, @IrisCodeRight=?, @NewUserID=? OUTPUT";
+        L"{CALL sp_EnrollUser(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)}";
 
     checkRC(SQLPrepareW(hStmt, const_cast<SQLWCHAR*>(sql), SQL_NTS),
             hStmt, SQL_HANDLE_STMT, "Prepare sp_EnrollUser");
 
+    // ── Text parameters (1-3) ────────────────────────────────────────────────
     std::wstring wPassport    = strToWide(passportNumber);
     SQLLEN       passLen      = SQL_NTS;
     SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR,
@@ -75,19 +81,45 @@ int DatabaseManager::enrollUser(const std::string& passportNumber,
     SQLBindParameter(hStmt, 3, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR,
                      50, 0, const_cast<SQLWCHAR*>(wNationality.c_str()), 0, &natLen);
 
-    auto   leftBytes = irisLeft.toBytes();
-    SQLLEN leftLen   = static_cast<SQLLEN>(leftBytes.size());
-    SQLBindParameter(hStmt, 4, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY,
-                     512, 0, leftBytes.data(), 512, &leftLen);
+    // ── Helper: bind one binary param (param index 1-based) ─────────────────
+    // bytes storage must stay alive until SQLExecute. We use a fixed array of 3.
+    std::vector<uint8_t> leftBuf[3], rightBuf[3];
+    SQLLEN               leftLen[3] = {}, rightLen[3] = {};
 
-    auto   rightBytes = irisRight.toBytes();
-    SQLLEN rightLen   = static_cast<SQLLEN>(rightBytes.size());
-    SQLBindParameter(hStmt, 5, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_VARBINARY,
-                     512, 0, rightBytes.data(), 512, &rightLen);
+    auto bindBinary = [&](SQLUSMALLINT paramIdx,
+                          const std::vector<IrisCode>& codes,
+                          std::vector<uint8_t>* bufs,
+                          SQLLEN* lens,
+                          int slot)
+    {
+        if (slot < static_cast<int>(codes.size())) {
+            bufs[slot] = codes[slot].toBytes();
+            lens[slot] = static_cast<SQLLEN>(bufs[slot].size());
+            SQLBindParameter(hStmt, paramIdx, SQL_PARAM_INPUT,
+                             SQL_C_BINARY, SQL_VARBINARY,
+                             512, 0, bufs[slot].data(), 512, &lens[slot]);
+        } else {
+            lens[slot] = SQL_NULL_DATA;
+            SQLBindParameter(hStmt, paramIdx, SQL_PARAM_INPUT,
+                             SQL_C_BINARY, SQL_VARBINARY,
+                             512, 0, nullptr, 0, &lens[slot]);
+        }
+    };
 
+    // params 4-6: left eye templates 1, 2, 3
+    bindBinary(4, irisLeft,  leftBuf,  leftLen,  0);
+    bindBinary(5, irisLeft,  leftBuf,  leftLen,  1);
+    bindBinary(6, irisLeft,  leftBuf,  leftLen,  2);
+
+    // params 7-9: right eye templates 1, 2, 3
+    bindBinary(7, irisRight, rightBuf, rightLen, 0);
+    bindBinary(8, irisRight, rightBuf, rightLen, 1);
+    bindBinary(9, irisRight, rightBuf, rightLen, 2);
+
+    // param 10: OUTPUT NewUserID
     SQLINTEGER newUserID    = 0;
     SQLLEN     newUserIDLen = sizeof(SQLINTEGER);
-    SQLBindParameter(hStmt, 6, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER,
+    SQLBindParameter(hStmt, 10, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER,
                      0, 0, &newUserID, sizeof(newUserID), &newUserIDLen);
 
     checkRC(SQLExecute(hStmt), hStmt, SQL_HANDLE_STMT, "Execute sp_EnrollUser");
@@ -144,13 +176,20 @@ std::optional<User> DatabaseManager::getUserByPassport(const std::string& passpo
         SQLSMALLINT eyeVal = 0;
         SQLGetData(hStmt, 5, SQL_C_SSHORT, &eyeVal, sizeof(eyeVal), &ind);
 
-        uint8_t  irisBytes[512] = {};
-        SQLLEN   irisLen        = 0;
-        SQLRETURN rc = SQLGetData(hStmt, 6, SQL_C_BINARY, irisBytes, 512, &irisLen);
-        if ((rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) && irisLen == 512) {
-            IrisCode code = IrisCode::fromBytes(irisBytes, 512);
-            if (eyeVal == 0) { user.irisCodeLeft  = code; user.hasLeft  = true; }
-            else             { user.irisCodeRight = code; user.hasRight = true; }
+        // Read IrisCode1 (mandatory) — columns 6, 7, 8
+        // Use the first non-NULL code as the primary for irisCodeLeft/Right in User.
+        // (getAllIrisCodes is used for full multi-template verification.)
+        for (int col = 6; col <= 8; ++col) {
+            uint8_t  irisBytes[512] = {};
+            SQLLEN   irisLen        = 0;
+            SQLRETURN rc = SQLGetData(hStmt, static_cast<SQLUSMALLINT>(col),
+                                      SQL_C_BINARY, irisBytes, 512, &irisLen);
+            if ((rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) && irisLen == 512) {
+                IrisCode code = IrisCode::fromBytes(irisBytes, 512);
+                if (eyeVal == 0 && !user.hasLeft)  { user.irisCodeLeft  = code; user.hasLeft  = true; }
+                if (eyeVal == 1 && !user.hasRight) { user.irisCodeRight = code; user.hasRight = true; }
+                break;  // only need first valid code here; verify() uses getAllIrisCodes
+            }
         }
     }
 
@@ -185,6 +224,50 @@ bool DatabaseManager::userExists(const std::string& passportNumber)
 
     freeStmt(hStmt);
     return count > 0;
+}
+
+// ---------------------------------------------------------------
+// getAllIrisCodes  (reads IrisCode1/2/3 from single row)
+// ---------------------------------------------------------------
+std::vector<IrisCode> DatabaseManager::getAllIrisCodes(const std::string& passportNumber,
+                                                        int eye)
+{
+    std::vector<IrisCode> results;
+    SQLHSTMT hStmt = allocStmt();
+
+    const wchar_t* sql =
+        L"SELECT f.IrisCode1, f.IrisCode2, f.IrisCode3 "
+        L"FROM IrisFeatures f "
+        L"JOIN Users u ON u.UserID = f.UserID "
+        L"WHERE u.PassportNumber = ? AND u.IsActive = 1 AND f.Eye = ?";
+    checkRC(SQLPrepareW(hStmt, const_cast<SQLWCHAR*>(sql), SQL_NTS),
+            hStmt, SQL_HANDLE_STMT, "Prepare getAllIrisCodes");
+
+    std::wstring wPassport = strToWide(passportNumber);
+    SQLLEN       passLen   = SQL_NTS;
+    SQLBindParameter(hStmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR,
+                     20, 0, const_cast<SQLWCHAR*>(wPassport.c_str()), 0, &passLen);
+
+    SQLLEN      eye_ind = 0;
+    SQLSMALLINT eyeVal  = static_cast<SQLSMALLINT>(eye);
+    SQLBindParameter(hStmt, 2, SQL_PARAM_INPUT, SQL_C_SSHORT, SQL_TINYINT,
+                     0, 0, &eyeVal, 0, &eye_ind);
+
+    checkRC(SQLExecute(hStmt), hStmt, SQL_HANDLE_STMT, "Execute getAllIrisCodes");
+
+    if (SQLFetch(hStmt) == SQL_SUCCESS) {
+        // Read up to 3 columns; add to results only if not NULL
+        for (int col = 1; col <= 3; ++col) {
+            uint8_t  irisBytes[512] = {};
+            SQLLEN   irisLen        = 0;
+            SQLRETURN rc = SQLGetData(hStmt, static_cast<SQLUSMALLINT>(col),
+                                      SQL_C_BINARY, irisBytes, 512, &irisLen);
+            if ((rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) && irisLen == 512)
+                results.push_back(IrisCode::fromBytes(irisBytes, 512));
+        }
+    }
+    freeStmt(hStmt);
+    return results;
 }
 
 // ---------------------------------------------------------------

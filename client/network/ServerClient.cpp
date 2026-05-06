@@ -96,7 +96,7 @@ AuthResponse ServerClient::sendIrisImage(const std::vector<uint8_t>& encryptedIm
         switch (body[0]) {
             case 0:  resp.status = AuthStatus::AUTHORIZED; break;
             case 1:  resp.status = AuthStatus::DENIED;     break;
-            default: resp.status = AuthStatus::ERROR;      break;
+            default: resp.status = AuthStatus::COMM_ERROR;      break;
         }
 
         if (bodyLen > 1)

@@ -8,10 +8,10 @@ using namespace std;
 namespace iris {
 
 // תוצאת בקשת זיהוי מהשרת
-enum class AuthStatus { AUTHORIZED, DENIED, ERROR };
+enum class AuthStatus { AUTHORIZED, DENIED, COMM_ERROR };
 
 struct AuthResponse {
-    AuthStatus  status   = AuthStatus::ERROR;
+    AuthStatus  status   = AuthStatus::COMM_ERROR;
     string message;   // הודעה מהשרת (אופציונלי)
 };
 

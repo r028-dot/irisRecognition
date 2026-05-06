@@ -15,7 +15,7 @@ AuthResult IrisProcessor::verify(const std::string& passportNumber,
 {
     AuthResult result;
 
-    // 1. Load stored iris code from DB
+    // 1. Load stored iris codes from DB (all templates for this eye)
     auto userOpt = m_db->getUserByPassport(passportNumber);
     if (!userOpt.has_value()) {
         result.status  = AuthStatus::USER_NOT_FOUND;
@@ -23,12 +23,11 @@ AuthResult IrisProcessor::verify(const std::string& passportNumber,
         m_db->logAuthAttempt(-1, eye, false, 1.0, "User not found");
         return result;
     }
+    const User& user = *userOpt;
 
-    const User& user   = *userOpt;
-    const IrisCode& stored = (eye == 0) ? user.irisCodeLeft : user.irisCodeRight;
-    bool hasCode           = (eye == 0) ? user.hasLeft      : user.hasRight;
-
-    if (!hasCode) {
+    // Get ALL stored iris codes for this eye (multi-template support)
+    std::vector<IrisCode> storedCodes = m_db->getAllIrisCodes(passportNumber, eye);
+    if (storedCodes.empty()) {
         result.status  = AuthStatus::USER_NOT_FOUND;
         result.message = "No iris code registered for the requested eye";
         m_db->logAuthAttempt(user.userID, eye, false, 1.0, "Missing eye code in DB");
@@ -50,9 +49,12 @@ AuthResult IrisProcessor::verify(const std::string& passportNumber,
         return result;
     }
 
-    // 4. Compare probe vs stored IrisCode
-    double dist         = m_matcher.compare(probe, stored);
-    result.hammingDist  = dist;
+    // 4. Compare probe vs ALL stored templates — return minimum Hamming distance
+    double dist = 1.0;
+    for (const IrisCode& stored : storedCodes)
+        dist = std::min(dist, m_matcher.compare(probe, stored));
+
+    result.hammingDist   = dist;
     result.matchedUserID = user.userID;
     result.matchedName   = user.fullName;
 
@@ -77,8 +79,8 @@ AuthResult IrisProcessor::verify(const std::string& passportNumber,
 AuthResult IrisProcessor::enroll(const std::string& passportNumber,
                                   const std::string& fullName,
                                   const std::string& nationality,
-                                  const std::vector<uint8_t>& imageDataLeft,
-                                  const std::vector<uint8_t>& imageDataRight)
+                                  const std::vector<std::vector<uint8_t>>& imagesLeft,
+                                  const std::vector<std::vector<uint8_t>>& imagesRight)
 {
     AuthResult result;
 
@@ -89,13 +91,16 @@ AuthResult IrisProcessor::enroll(const std::string& passportNumber,
         return result;
     }
 
-    // 2. Extract iris codes from both eye images
-    IrisCode leftCode  = m_extractor.extract(imageDataLeft);
-    IrisCode rightCode = m_extractor.extract(imageDataRight);
+    // 2. Extract iris codes from all provided images (1–3 per eye)
+    std::vector<IrisCode> leftCodes, rightCodes;
+    for (const auto& img : imagesLeft)
+        leftCodes.push_back(m_extractor.extract(img));
+    for (const auto& img : imagesRight)
+        rightCodes.push_back(m_extractor.extract(img));
 
-    // 3. Save user + both iris codes to DB
+    // 3. Save user + all iris codes to DB (one row per eye, up to 3 columns)
     int newUserID = m_db->enrollUser(passportNumber, fullName, nationality,
-                                      leftCode, rightCode);
+                                      leftCodes, rightCodes);
 
     result.status        = AuthStatus::MATCH;   // reused as "success"
     result.matchedUserID = newUserID;
