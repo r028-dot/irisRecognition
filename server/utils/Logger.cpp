@@ -3,7 +3,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
-
+using namespace std;
 Logger& Logger::instance()
 {
     static Logger inst;
@@ -16,23 +16,23 @@ Logger::~Logger()
         m_file.close();
 }
 
-void Logger::init(const std::string& filePath)
+void Logger::init(const string& filePath)// פותח (או יוצר) את קובץ הלוג. יש לקרוא פעם אחת בהפעלה.
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_file.is_open()) m_file.close();
-    m_file.open(filePath, std::ios::app);
+    lock_guard<mutex> lock(m_mutex);// מגן על הגישה לקובץ הלוג כדי למנוע בעיות במקרים של ריבוי תהליכים.
+    if (m_file.is_open()) m_file.close();// סוגר את הקובץ אם הוא כבר פתוח (אפשרות לאתחול מחדש).
+    m_file.open(filePath, std::ios::app);// פותח את הקובץ במצב הוספה (append) כדי לא למחוק לוגים קיימים.
 }
 
-void Logger::log(LogLevel level, const std::string& msg)
+void Logger::log(LogLevel level, const string& msg)// כותב שורה עם תאריך/שעה ורמת לוג למסוף ולקובץ (אם פתוח).
 {
-    std::string line = "[" + timestamp() + "] [" + levelStr(level) + "] " + msg;
-    std::lock_guard<std::mutex> lock(m_mutex);
-    std::cout << line << '\n';
-    if (m_file.is_open())
+    string line = "[" + timestamp() + "] [" + levelStr(level) + "] " + msg;
+    lock_guard<mutex> lock(m_mutex);// מגן על הגישה לקובץ הלוג כדי למנוע בעיות במקרים של ריבוי תהליכים.
+    std::cout << line << '\n';// מדפיס למסוף.
+    if (m_file.is_open())// אם הקובץ פתוח, כותב אליו את השורה.
         m_file << line << '\n';
 }
 
-std::string Logger::levelStr(LogLevel level)
+string Logger::levelStr(LogLevel level)// מחזירה מחרוזת עם שם רמת הלוג.
 {
     switch (level) {
         case LogLevel::LVL_DEBUG:   return "DEBUG";
@@ -43,14 +43,13 @@ std::string Logger::levelStr(LogLevel level)
     return "?????";
 }
 
-std::string Logger::timestamp()
+string Logger::timestamp()// מחזירה מחרוזת עם התאריך והשעה הנוכחיים בפורמט "YYYY-MM-DD HH:MM:SS.mmm".
 {
-    auto now   = std::chrono::system_clock::now();
-    auto time  = std::chrono::system_clock::to_time_t(now);
-    auto ms    = std::chrono::duration_cast<std::chrono::milliseconds>(
-                     now.time_since_epoch()) % 1000;
-    std::ostringstream ss;
-    ss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S")
-       << '.' << std::setfill('0') << std::setw(3) << ms.count();
+    auto now   = chrono::system_clock::now();
+    auto time  = chrono::system_clock::to_time_t(now);
+    auto ms    = chrono::duration_cast<chrono::milliseconds>(now.time_since_epoch()) % 1000;
+    ostringstream ss;
+    ss << put_time(localtime(&time), "%Y-%m-%d %H:%M:%S")
+       << '.' << setfill('0') << setw(3) << ms.count();
     return ss.str();
 }

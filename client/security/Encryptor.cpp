@@ -1,14 +1,34 @@
 #include "Encryptor.h"
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <openssl/err.h>
+#include <cstdlib>
+#include <cstring>
 #include <stdexcept>
 #include <string>
-using namespace std;
 
 namespace iris {
 
-// ── עזר: זורק חריג עם הודעת שגיאה מ-OpenSSL ──────────────────────────────
-static void throwOpenSSLError(const string& context)
+// ── helpers ──────────────────────────────────────────────────────────────
+static std::uint8_t hexNibble(char c)
+{
+    if (c >= '0' && c <= '9') return static_cast<std::uint8_t>(c - '0');
+    if (c >= 'a' && c <= 'f') return static_cast<std::uint8_t>(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return static_cast<std::uint8_t>(c - 'A' + 10);
+    throw std::runtime_error("Encryptor: invalid hex character in IRIS_AES_KEY");
+}
+
+void Encryptor::parseHexKey(const char* hex, std::uint8_t* out32)
+{
+    if (std::strlen(hex) != 64)
+        throw std::runtime_error(
+            "Encryptor: IRIS_AES_KEY must be exactly 64 hex chars (32 bytes)");
+    for (int i = 0; i < 32; ++i)
+        out32[i] = static_cast<std::uint8_t>(
+            (hexNibble(hex[2*i]) << 4) | hexNibble(hex[2*i + 1]));
+}
+
+static void throwOpenSSLError(const std::string& context)
 {
     unsigned long err = ERR_get_error();
     char buf[256];
@@ -16,82 +36,88 @@ static void throwOpenSSLError(const string& context)
     throw std::runtime_error(context + ": " + buf);
 }
 
-// ── בנאי ──────────────────────────────────────────────────────────────────
-Encryptor::Encryptor(const vector<uint8_t>& key,
-                     const vector<uint8_t>& iv)
-    : m_key(key), m_iv(iv)
+// ── Constructor ──────────────────────────────────────────────────────────
+Encryptor::Encryptor()
 {
-    if (key.size() != 32)
-        throw invalid_argument("AES-256 key must be 32 bytes");
-    if (iv.size() != 16)
-        throw invalid_argument("AES-CBC IV must be 16 bytes");
+    const char* envKey = std::getenv("IRIS_AES_KEY");
+    if (!envKey)
+        throw std::runtime_error(
+            "Encryptor: environment variable IRIS_AES_KEY is not set");
+    parseHexKey(envKey, m_key);
 }
 
-// ── encrypt ───────────────────────────────────────────────────────────────
-// plaintext → ciphertext (AES-256-CBC, PKCS#7 padding)
-vector<uint8_t> Encryptor::encrypt(const vector<uint8_t>& data) const
+// ── encrypt (random IV) ──────────────────────────────────────────────────
+std::vector<std::uint8_t>
+Encryptor::encrypt(const std::vector<std::uint8_t>& plaintext,
+                   std::uint8_t out_iv[16]) const
+{
+    if (RAND_bytes(out_iv, 16) != 1)
+        throwOpenSSLError("RAND_bytes");
+    return encryptWithIV(plaintext, out_iv);
+}
+
+// ── encryptWithIV (caller-supplied IV) ───────────────────────────────────
+std::vector<std::uint8_t>
+Encryptor::encryptWithIV(const std::vector<std::uint8_t>& plaintext,
+                         const std::uint8_t iv[16]) const
 {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx)
-        throwOpenSSLError("EVP_CIPHER_CTX_new");
+    if (!ctx) throwOpenSSLError("EVP_CIPHER_CTX_new");
 
-    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr,
-                           m_key.data(), m_iv.data()) != 1) {
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, m_key, iv) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         throwOpenSSLError("EVP_EncryptInit_ex");
     }
 
-    // גודל מקסימלי: plaintext + block שלם לpadding
-    std::vector<uint8_t> ciphertext(data.size() + 16);
+    std::vector<std::uint8_t> cipher(plaintext.size() + EVP_MAX_BLOCK_LENGTH);
     int outLen1 = 0, outLen2 = 0;
 
-    if (EVP_EncryptUpdate(ctx, ciphertext.data(), &outLen1,
-                          data.data(), static_cast<int>(data.size())) != 1) {
+    if (EVP_EncryptUpdate(ctx, cipher.data(), &outLen1,
+                          plaintext.data(),
+                          static_cast<int>(plaintext.size())) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         throwOpenSSLError("EVP_EncryptUpdate");
     }
-
-    if (EVP_EncryptFinal_ex(ctx, ciphertext.data() + outLen1, &outLen2) != 1) {
+    if (EVP_EncryptFinal_ex(ctx, cipher.data() + outLen1, &outLen2) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         throwOpenSSLError("EVP_EncryptFinal_ex");
     }
 
     EVP_CIPHER_CTX_free(ctx);
-    ciphertext.resize(static_cast<size_t>(outLen1 + outLen2));
-    return ciphertext;
+    cipher.resize(static_cast<size_t>(outLen1 + outLen2));
+    return cipher;
 }
 
-// ── decrypt ───────────────────────────────────────────────────────────────
-// ciphertext → plaintext (AES-256-CBC, מסיר PKCS#7 padding)
-vector<uint8_t> Encryptor::decrypt(const vector<uint8_t>& data) const
+// ── decrypt ──────────────────────────────────────────────────────────────
+std::vector<std::uint8_t>
+Encryptor::decrypt(const std::vector<std::uint8_t>& cipher,
+                   const std::uint8_t iv[16]) const
 {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx)
-        throwOpenSSLError("EVP_CIPHER_CTX_new");
+    if (!ctx) throwOpenSSLError("EVP_CIPHER_CTX_new");
 
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr,
-                           m_key.data(), m_iv.data()) != 1) {
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr, m_key, iv) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         throwOpenSSLError("EVP_DecryptInit_ex");
     }
 
-    vector<uint8_t> plaintext(data.size());
+    std::vector<std::uint8_t> plain(cipher.size() + EVP_MAX_BLOCK_LENGTH);
     int outLen1 = 0, outLen2 = 0;
 
-    if (EVP_DecryptUpdate(ctx, plaintext.data(), &outLen1,
-                          data.data(), static_cast<int>(data.size())) != 1) {
+    if (EVP_DecryptUpdate(ctx, plain.data(), &outLen1,
+                          cipher.data(),
+                          static_cast<int>(cipher.size())) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         throwOpenSSLError("EVP_DecryptUpdate");
     }
-
-    if (EVP_DecryptFinal_ex(ctx, plaintext.data() + outLen1, &outLen2) != 1) {
+    if (EVP_DecryptFinal_ex(ctx, plain.data() + outLen1, &outLen2) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         throwOpenSSLError("EVP_DecryptFinal_ex (bad key/IV or corrupted data)");
     }
 
     EVP_CIPHER_CTX_free(ctx);
-    plaintext.resize(static_cast<size_t>(outLen1 + outLen2));
-    return plaintext;
+    plain.resize(static_cast<size_t>(outLen1 + outLen2));
+    return plain;
 }
 
 } // namespace iris

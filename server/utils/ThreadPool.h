@@ -8,32 +8,30 @@
 #include <future>
 #include <stdexcept>
 
-// Fixed-size thread pool.
-// Usage:  ThreadPool pool(8);
-//         auto fut = pool.enqueue([]{ return 42; });
+// מאגר תהליכונים (ThreadPool): מנהל קבוצה קבועה של תהליכוני עבודה ותור משימות לטיפול מקבילי בבקשות השרת.
 class ThreadPool {
 public:
     explicit ThreadPool(size_t numThreads);
     ~ThreadPool();
 
-    ThreadPool(const ThreadPool&)            = delete;
+    ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
 
-    // Enqueue a callable and return a std::future for its result.
+    // מוסיף משימה לתור ומחזיר std::future לתוצאה שלה.
     template<typename F, typename... Args>
     auto enqueue(F&& f, Args&&... args)
         -> std::future<std::invoke_result_t<F, Args...>>;
 
 private:
-    std::vector<std::thread>          m_workers;
-    std::queue<std::function<void()>> m_tasks;
-    std::mutex                        m_mutex;
-    std::condition_variable           m_cv;
-    bool                              m_stop = false;
+    vector<thread> m_workers;
+    queue<function<void()>> m_tasks;
+    mutex m_mutex;
+    condition_variable m_cv;
+    bool m_stop = false;
 };
 
-// ── Template implementation ───────────────────────────────────────────────
 template<typename F, typename... Args>
+// מוסיף משימה לתור ומחזיר std::future לתוצאה שלה.
 auto ThreadPool::enqueue(F&& f, Args&&... args)
     -> std::future<std::invoke_result_t<F, Args...>>
 {
@@ -42,9 +40,9 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
         std::bind(std::forward<F>(f), std::forward<Args>(args)...));
     std::future<R> fut = task->get_future();
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::lock_guard<mutex> lock(m_mutex);
         if (m_stop)
-            throw std::runtime_error("ThreadPool: enqueue on stopped pool");
+            throw runtime_error("ThreadPool: enqueue on stopped pool");
         m_tasks.emplace([task]{ (*task)(); });
     }
     m_cv.notify_one();

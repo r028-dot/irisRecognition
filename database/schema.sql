@@ -1,8 +1,4 @@
--- ============================================================
---  Iris Recognition System - SQL Server Database Schema
--- ============================================================
-
--- Drop and recreate cleanly
+--יוצר מסד נתונים חדש בשם IrisRecognitionDB
 IF EXISTS (SELECT name FROM sys.databases WHERE name = N'IrisRecognitionDB')
 BEGIN
     ALTER DATABASE IrisRecognitionDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
@@ -16,13 +12,10 @@ GO
 USE IrisRecognitionDB;
 GO
 
--- ------------------------------------------------------------
--- Table: Users
--- PassportNumber is the unique business key used for lookup
--- ------------------------------------------------------------
+-- יוצר טבלת משתמשים עם שדות: UserID- ת"ז, PassengerID- מספר זהות נוסע, FullName- שם מלא, Nationality- לאום, CreatedAt-  תאריך יצירת , IsActive- פעיל/לא פעיל
 CREATE TABLE Users (
     UserID          INT             IDENTITY(1,1)   PRIMARY KEY,
-    PassportNumber  NVARCHAR(20)    NOT NULL        UNIQUE,
+    PassengerID     NVARCHAR(20)    NOT NULL        UNIQUE,
     FullName        NVARCHAR(100)   NOT NULL,
     Nationality     NVARCHAR(50)    NOT NULL        DEFAULT '',
     CreatedAt       DATETIME2       NOT NULL        DEFAULT GETDATE(),
@@ -35,7 +28,8 @@ GO
 -- One row per user per eye.  Up to 3 enrollment templates are
 -- stored in three columns so that the DB enforces exactly one
 -- record per (UserID, Eye) pair.
--- Each IrisCodeN = bits[256] || mask[256] = 512 bytes.
+-- Each IrisCodeN = bits[256] || mask[256] = 512 bytes plaintext.
+-- Encrypted: IV(16) + AES-256-CBC ciphertext(528) = 544 bytes stored.
 -- IrisCode1 is mandatory; IrisCode2 / IrisCode3 are optional.
 -- Eye: 0 = Left, 1 = Right
 -- ------------------------------------------------------------
@@ -43,9 +37,11 @@ CREATE TABLE IrisFeatures (
     FeatureID       INT             IDENTITY(1,1)   PRIMARY KEY,
     UserID          INT             NOT NULL,
     Eye             TINYINT         NOT NULL        CHECK (Eye IN (0, 1)),
-    IrisCode1       VARBINARY(512)  NOT NULL,       -- primary template
-    IrisCode2       VARBINARY(512)  NULL,           -- 2nd enrollment image (optional)
-    IrisCode3       VARBINARY(512)  NULL,           -- 3rd enrollment image (optional)
+    -- עמודות IrisCode מאוחסנות מוצפנות AES-256-CBC (IV+ciphertext = 544 בתים מקסימום)
+    -- גודל עמודה 560 מספק מרווח. מפתח ב-IRIS_DB_AES_KEY בשרת.
+    IrisCode1       VARBINARY(560)  NOT NULL,       -- primary template (מוצפן)
+    IrisCode2       VARBINARY(560)  NULL,           -- 2nd enrollment (optional, מוצפן)
+    IrisCode3       VARBINARY(560)  NULL,           -- 3rd enrollment (optional, מוצפן)
     RegisteredAt    DATETIME2       NOT NULL        DEFAULT GETDATE(),
 
     CONSTRAINT FK_IrisFeatures_Users
@@ -57,24 +53,7 @@ CREATE TABLE IrisFeatures (
 );
 GO
 
--- ------------------------------------------------------------
--- Table: RecognitionLog
--- Audit log for every recognition attempt
--- ------------------------------------------------------------
-CREATE TABLE RecognitionLog (
-    LogID           INT             IDENTITY(1,1)   PRIMARY KEY,
-    AttemptedAt     DATETIME2       NOT NULL        DEFAULT GETDATE(),
-    MatchedUserID   INT             NULL,
-    Eye             TINYINT         NOT NULL        CHECK (Eye IN (0, 1)),
-    Success         BIT             NOT NULL,
-    HammingDistance FLOAT           NULL,
-    Notes           NVARCHAR(255)   NULL,
-
-    CONSTRAINT FK_RecognitionLog_Users
-        FOREIGN KEY (MatchedUserID) REFERENCES Users(UserID)
-        ON DELETE SET NULL
-);
-GO
+-- RecognitionLog הוסר — לוג גישה מנוהל כעת דרך AccessLogger (CSV) בשרת
 
 -- ============================================================
 --  Stored Procedures
@@ -82,28 +61,28 @@ GO
 
 -- Enroll a new user with both iris codes (up to 3 templates per eye)
 CREATE OR ALTER PROCEDURE sp_EnrollUser
-    @PassportNumber NVARCHAR(20),
+    @PassengerID    NVARCHAR(20),
     @FullName       NVARCHAR(100),
     @Nationality    NVARCHAR(50),
-    @IrisLeft1      VARBINARY(512),         -- mandatory
-    @IrisLeft2      VARBINARY(512) = NULL,  -- optional 2nd left template
-    @IrisLeft3      VARBINARY(512) = NULL,  -- optional 3rd left template
-    @IrisRight1     VARBINARY(512),         -- mandatory
-    @IrisRight2     VARBINARY(512) = NULL,  -- optional 2nd right template
-    @IrisRight3     VARBINARY(512) = NULL,  -- optional 3rd right template
+    @IrisLeft1      VARBINARY(560),         -- mandatory
+    @IrisLeft2      VARBINARY(560) = NULL,  -- optional 2nd left template
+    @IrisLeft3      VARBINARY(560) = NULL,  -- optional 3rd left template
+    @IrisRight1     VARBINARY(560),         -- mandatory
+    @IrisRight2     VARBINARY(560) = NULL,  -- optional 2nd right template
+    @IrisRight3     VARBINARY(560) = NULL,  -- optional 3rd right template
     @NewUserID      INT OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
     BEGIN TRANSACTION;
     BEGIN TRY
-        IF NOT EXISTS (SELECT 1 FROM Users WHERE PassportNumber = @PassportNumber)
+        IF NOT EXISTS (SELECT 1 FROM Users WHERE PassengerID = @PassengerID)
         BEGIN
-            INSERT INTO Users (PassportNumber, FullName, Nationality)
-            VALUES (@PassportNumber, @FullName, @Nationality);
+            INSERT INTO Users (PassengerID, FullName, Nationality)
+            VALUES (@PassengerID, @FullName, @Nationality);
         END
 
-        SELECT @NewUserID = UserID FROM Users WHERE PassportNumber = @PassportNumber;
+        SELECT @NewUserID = UserID FROM Users WHERE PassengerID = @PassengerID;
 
         -- Upsert left eye — all 3 templates in one row
         MERGE IrisFeatures AS target
@@ -136,15 +115,15 @@ BEGIN
 END;
 GO
 
--- Load a user's data + iris codes by passport number
-CREATE OR ALTER PROCEDURE sp_GetUserByPassport
-    @PassportNumber NVARCHAR(20)
+-- Load a user's data + iris codes by passenger ID
+CREATE OR ALTER PROCEDURE sp_GetUserByID
+    @PassengerID NVARCHAR(20)
 AS
 BEGIN
     SET NOCOUNT ON;
     SELECT
         u.UserID,
-        u.PassportNumber,
+        u.PassengerID,
         u.FullName,
         u.Nationality,
         f.Eye,
@@ -153,31 +132,17 @@ BEGIN
         f.IrisCode3
     FROM Users u
     JOIN IrisFeatures f ON f.UserID = u.UserID
-    WHERE u.PassportNumber = @PassportNumber AND u.IsActive = 1;
+    WHERE u.PassengerID = @PassengerID AND u.IsActive = 1;
 END;
 GO
 
--- Log one recognition attempt
-CREATE OR ALTER PROCEDURE sp_LogAuthAttempt
-    @MatchedUserID  INT,
-    @Eye            TINYINT,
-    @Success        BIT,
-    @HammingDist    FLOAT,
-    @Notes          NVARCHAR(255) = NULL
-AS
-BEGIN
-    SET NOCOUNT ON;
-    INSERT INTO RecognitionLog (MatchedUserID, Eye, Success, HammingDistance, Notes)
-    VALUES (@MatchedUserID, @Eye, @Success, @HammingDist, @Notes);
-END;
-GO
+-- sp_LogAuthAttempt הוסר — AccessLogger (CSV) מחליף את הלוג בDB
 
 -- ============================================================
 --  Indexes for performance
 -- ============================================================
 CREATE INDEX IX_IrisFeatures_UserID        ON IrisFeatures(UserID);
-CREATE INDEX IX_RecognitionLog_AttemptedAt ON RecognitionLog(AttemptedAt DESC);
-CREATE INDEX IX_RecognitionLog_UserID      ON RecognitionLog(MatchedUserID);
+-- RecognitionLog indexes removed (table removed)
 GO
 
 -- ============================================================
@@ -288,15 +253,15 @@ BEGIN
             JOIN Flights f ON f.FlightID = b.FlightID
             WHERE b.UserID = @UserID AND f.GateID = @GateID AND b.HasBoarded = 0
         )
-            SET @Reason = 'לא בזמן העלייה למטוס';
+            SET @Reason = 'Not within boarding time window';
         ELSE IF EXISTS (
             SELECT 1 FROM Bookings b
             JOIN Flights f ON f.FlightID = b.FlightID
             WHERE b.UserID = @UserID AND f.GateID = @GateID AND b.HasBoarded = 1
         )
-            SET @Reason = 'הנוסע כבר עלה למטוס';
+            SET @Reason = 'Passenger already boarded';
         ELSE
-            SET @Reason = 'אין הזמנה לטיסה בשער זה';
+            SET @Reason = 'No booking found for this gate';
         RETURN;
     END
 
@@ -305,7 +270,7 @@ BEGIN
     WHERE UserID = @UserID AND FlightID = @FlightID;
 
     SET @AccessGranted = 1;
-    SET @Reason = 'גישה מאושרת';
+    SET @Reason = 'Access granted';
 END;
 GO
 
@@ -316,4 +281,33 @@ CREATE INDEX IX_Flights_GateID         ON Flights(GateID);
 CREATE INDEX IX_Flights_BoardingWindow ON Flights(BoardingStart, BoardingEnd);
 CREATE INDEX IX_Bookings_UserID        ON Bookings(UserID);
 CREATE INDEX IX_Bookings_FlightID      ON Bookings(FlightID);
+GO
+
+-- AuditLog, triggers removed — AccessLogger (CSV) handles all audit logging
+
+-- ============================================================
+--  משתמש SQL מוגבל לשרת — EXECUTE בלבד על Stored Procedures.
+--  השרת לעולם לא יכול לבצע SELECT/INSERT/UPDATE/DELETE ישיר על הטבלאות.
+-- ============================================================
+-- שנה את הסיסמה לסיסמה חזקה לפני Deploy בסביבת ייצור!
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'IrisServerLogin')
+    CREATE LOGIN IrisServerLogin WITH PASSWORD = 'Ch@ngeMe2026!';
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'IrisServerUser')
+BEGIN
+    CREATE USER IrisServerUser FOR LOGIN IrisServerLogin;
+END
+GO
+
+-- הענק הרשאת EXECUTE בלבד על הפרוצדורות המורשות
+GRANT EXECUTE ON sp_EnrollUser      TO IrisServerUser;
+GRANT EXECUTE ON sp_GetUserByID     TO IrisServerUser;
+GRANT EXECUTE ON sp_CheckGateAccess   TO IrisServerUser;
+GO
+
+-- וודא שאין גישה ישירה לטבלאות
+DENY SELECT, INSERT, UPDATE, DELETE ON IrisFeatures    TO IrisServerUser;
+DENY SELECT, INSERT, UPDATE, DELETE ON Users           TO IrisServerUser;
+DENY SELECT, INSERT, UPDATE, DELETE ON Bookings        TO IrisServerUser;
 GO

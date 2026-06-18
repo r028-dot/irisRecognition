@@ -5,14 +5,13 @@
 #include "../models/IrisCode.h"
 #include "Normalization.h"
 
-// Extracts a 2048-bit IrisCode from a raw eye image.
-// Pipeline:  decode → grayscale → segmentation → rubber-sheet normalization
-//            → 2D Log-Gabor bank → phase quantization → IrisCode
+// שכבת אלגוריתם בלבד: חילוץ IrisCode מתמונה גולמית
+// אינה מכירה את DatabaseManager ואינה מבצעת שאילתות DB.
 class FeatureExtractor {
 public:
     FeatureExtractor(int normWidth = 512, int normHeight = 64);
 
-    // imageData: raw bytes of an eye image (JPEG / PNG / BMP encoded)
+
     IrisCode extract(const std::vector<uint8_t>& imageData) const;
 
 private:

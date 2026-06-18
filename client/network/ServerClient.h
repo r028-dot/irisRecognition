@@ -1,37 +1,62 @@
-﻿#pragma once
+#pragma once
+#include <openssl/ssl.h>
 #include <vector>
 #include <cstdint>
 #include <string>
 #include "../config/ClientConfig.h"
-using namespace std;
 
 namespace iris {
 
-// תוצאת בקשת זיהוי מהשרת
+// Result of a verify request — mirrors VerifyResponse on the wire.
 enum class AuthStatus { AUTHORIZED, DENIED, COMM_ERROR };
 
 struct AuthResponse {
-    AuthStatus  status   = AuthStatus::COMM_ERROR;
-    string message;   // הודעה מהשרת (אופציונלי)
+    AuthStatus  status        = AuthStatus::COMM_ERROR;
+    double      hammingDist   = 1.0;
+    int32_t     matchedUserID = -1;
+    std::string matchedName;
+    std::string flightNumber;
+    std::string seatNumber;
+    std::string message;
 };
 
-// מנהל את חיבור TCP לשרת: שליחה וקבלה
+// Result of an enroll request.
+struct EnrollResult {
+    bool        success   = false;
+    int32_t     newUserID = -1;
+    std::string message;
+};
+
+// Manages a one-shot TCP exchange with the iris recognition server.
+// Each verify() call opens a fresh connection (matches server's accept loop).
 class ServerClient {
 public:
     explicit ServerClient(const ClientConfig& config);
     ~ServerClient();
 
-    // שולח תמונת קשתית מוצפנת, מחזיר תשובת זיהוי
-    AuthResponse sendIrisImage(const vector<uint8_t>& encryptedImage) const;
+    // אימות dual-eye: 3 תמונות שמאל + 3 תמונות ימין, השרת מחשב ממוצע HD
+    AuthResponse verify(const std::string&                            passengerID,
+                        const std::string&                            gateName,
+                        const std::uint8_t                            iv[16],
+                        const std::vector<std::vector<std::uint8_t>>& encryptedLeft,
+                        const std::vector<std::vector<std::uint8_t>>& encryptedRight) const;
+    EnrollResult enroll(const std::string&                            passengerID,
+                        const std::string&                            fullName,
+                        const std::string&                            nationality,
+                        const std::uint8_t                            iv[16],
+                        const std::vector<std::vector<std::uint8_t>>& encryptedLeft,
+                        const std::vector<std::vector<std::uint8_t>>& encryptedRight) const;
+
+
 
 private:
-    // פותח שקע TCP לשרת, זורק חריג אם נכשל
-    int  connectToServer() const;
-    void sendAll(int sock, const uint8_t* buf, size_t len) const;
-    void recvAll(int sock, uint8_t* buf, size_t len) const;
+    SSL* connectToServer() const;
+    void sendAll(SSL* ssl, const void* buf, std::size_t len) const;
+    void recvAll(SSL* ssl, void*       buf, std::size_t len) const;
 
-    string m_host;
-    int m_port;
+    SSL_CTX*    m_ctx = nullptr;   // הקשר TLS של הלקוח (מאמת את תעודת השרת)
+    std::string m_host;
+    int         m_port;
 };
 
 } // namespace iris

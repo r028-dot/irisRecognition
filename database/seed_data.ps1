@@ -53,14 +53,16 @@ foreach ($u in $users) {
     $cmd.CommandText = "sp_EnrollUser"
     $cmd.CommandType = [System.Data.CommandType]::StoredProcedure
 
-    $cmd.Parameters.AddWithValue("@PassportNumber", $u.Passport) | Out-Null
+    $cmd.Parameters.AddWithValue("@PassengerID", $u.Passport) | Out-Null
     $cmd.Parameters.AddWithValue("@FullName",        $u.Name)    | Out-Null
     $cmd.Parameters.AddWithValue("@Nationality",     $u.Nation)  | Out-Null
 
-    # Explicitly type the binary params to avoid "No mapping" error
-    $pL = $cmd.Parameters.Add("@IrisCodeLeft",  [System.Data.SqlDbType]::Binary, 512)
+    # Explicitly type the binary params to avoid "No mapping" error.
+    # Schema accepts up to 3 templates per eye (IrisLeft1..3 / IrisRight1..3);
+    # the seed only populates template #1 and leaves 2/3 NULL.
+    $pL = $cmd.Parameters.Add("@IrisLeft1",  [System.Data.SqlDbType]::VarBinary, 512)
     $pL.Value = [byte[]](New-IrisCode $u.SeedL)
-    $pR = $cmd.Parameters.Add("@IrisCodeRight", [System.Data.SqlDbType]::Binary, 512)
+    $pR = $cmd.Parameters.Add("@IrisRight1", [System.Data.SqlDbType]::VarBinary, 512)
     $pR.Value = [byte[]](New-IrisCode $u.SeedR)
 
     $outParam = $cmd.Parameters.Add("@NewUserID", [System.Data.SqlDbType]::Int)
@@ -87,10 +89,10 @@ $logEntries = @(
 
 # Fetch real IDs from DB in case output param was empty
 $qid = $conn.CreateCommand()
-$qid.CommandText = "SELECT UserID, PassportNumber FROM Users ORDER BY UserID"
+$qid.CommandText = "SELECT UserID, PassengerID FROM Users ORDER BY UserID"
 $ridR = $qid.ExecuteReader()
 $idMap = @{}
-while ($ridR.Read()) { $idMap[$ridR["PassportNumber"]] = [int]$ridR["UserID"] }
+while ($ridR.Read()) { $idMap[$ridR["PassengerID"]] = [int]$ridR["UserID"] }
 $ridR.Close()
 $passportOrder = $users | ForEach-Object { $_.Passport }
 $enrolledIDs = $passportOrder | ForEach-Object { $idMap[$_] }
@@ -114,17 +116,17 @@ Write-Host ("[DB] Inserted {0} RecognitionLog entries" -f $logEntries.Count) -Fo
 Write-Host "`n=== Users ===" -ForegroundColor Cyan
 $q = $conn.CreateCommand()
 $q.CommandText = @"
-SELECT u.UserID, u.PassportNumber, u.FullName, u.Nationality,
+SELECT u.UserID, u.PassengerID, u.FullName, u.Nationality,
        COUNT(f.FeatureID) AS EyesRegistered
 FROM Users u
 LEFT JOIN IrisFeatures f ON f.UserID = u.UserID
-GROUP BY u.UserID, u.PassportNumber, u.FullName, u.Nationality
+GROUP BY u.UserID, u.PassengerID, u.FullName, u.Nationality
 ORDER BY u.UserID
 "@
 $reader = $q.ExecuteReader()
 while ($reader.Read()) {
     Write-Host ("  ID={0} | {1,-12} | {2,-15} | {3,-10} | Eyes={4}" -f
-        $reader["UserID"], $reader["PassportNumber"],
+        $reader["UserID"], $reader["PassengerID"],
         $reader["FullName"], $reader["Nationality"], $reader["EyesRegistered"])
 }
 $reader.Close()

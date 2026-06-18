@@ -1,26 +1,36 @@
 ﻿#pragma once
 #include <vector>
 #include <cstdint>
-using namespace std;
 
 namespace iris {
 
-// AES-256-CBC encryption/decryption via OpenSSL
+// AES-256-CBC encryption with random per-message IV.
+// The 256-bit key is read from environment variable IRIS_AES_KEY
+// (32 raw bytes encoded as 64 hex characters) — same scheme as the server.
 class Encryptor {
 public:
-    // key: 32 bytes (256 bit), iv: 16 bytes
-    Encryptor(const vector<uint8_t>& key,
-              const vector<uint8_t>& iv);
+    // Loads key from IRIS_AES_KEY env-var. Throws on missing/invalid key.
+    Encryptor();
 
-    // plaintext -> ciphertext
-    vector<uint8_t> encrypt(const vector<uint8_t>& data) const;
+    // Encrypts plaintext with a freshly generated random IV.
+    //  out_iv:  receives the 16-byte IV (caller keeps it for the wire).
+    //  returns: ciphertext only (no IV prefix).
+    std::vector<std::uint8_t> encrypt(const std::vector<std::uint8_t>& plaintext,
+                                      std::uint8_t out_iv[16]) const;
 
-    // ciphertext -> plaintext
-    vector<uint8_t> decrypt(const vector<uint8_t>& data) const;
+    // Encrypts plaintext using an explicit caller-supplied IV.
+    // Used by multi-shot verify, where all probes in one request share one IV.
+    std::vector<std::uint8_t> encryptWithIV(const std::vector<std::uint8_t>& plaintext,
+                                            const std::uint8_t iv[16]) const;
+
+    // Decrypts ciphertext using an explicit IV.
+    std::vector<std::uint8_t> decrypt(const std::vector<std::uint8_t>& ciphertext,
+                                      const std::uint8_t iv[16]) const;
 
 private:
-    vector<uint8_t> m_key;
-    vector<uint8_t> m_iv;
+    std::uint8_t m_key[32] = {};
+
+    static void parseHexKey(const char* hex, std::uint8_t* out32);
 };
 
 } // namespace iris

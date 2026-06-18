@@ -1,20 +1,21 @@
 #pragma once
 #include <opencv2/opencv.hpp>
+using namespace std;
 
-// Localization result produced by Segmentation or received from the client.
+// תיאור אזור הקשתית בתמונה: מרכז ורדיוס האישון, מרכז ורדיוס הקשתית.
 struct IrisRegion {
     cv::Point2f pupilCenter;
-    float       pupilRadius  = 0.f;
+    float pupilRadius = 0.f;
     cv::Point2f irisCenter;
-    float       irisRadius   = 0.f;
+    float irisRadius = 0.f;
 };
 
-// Implements Daugman's Rubber Sheet Model.
-// Maps the annular iris region to a fixed-size rectangular image.
+// מיישם את מודל Rubber Sheet של Daugman.
+// ממפה את אזור הקשתית הטבעתית לתמונה מלבנית בגודל קבוע.
 class Normalization {
 public:
-    // outWidth  ≈ 512 (angular resolution)
-    // outHeight ≈  64 (radial resolution)
+    // outWidth  ≈ 512 (רזולוציה זוויתית)
+    // outHeight ≈  64 (רזולוציה רדיאלית)
     Normalization(int outWidth = 512, int outHeight = 64);
 
     // Unwrap the iris from srcGray into a normalizedWidth x normalizedHeight CV_8UC1 image.

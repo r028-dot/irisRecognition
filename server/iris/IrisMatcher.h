@@ -15,6 +15,8 @@
 // Rotation compensation: for each 8-byte (uint64) group, right-rotate by s bits.
 // s angular positions = s × 5.625° of iris rotation.
 // MAX_SHIFT = 8 positions = ±45° — covers normal head-tilt variation.
+// Tested ±56° (10 positions) and it was neutral on TAR while slightly tightening
+// the impostor margin, so the smaller window is preferred.
 class IrisMatcher {
 public:
     // ±8 positions × 5.625°/position = ±45° rotation search

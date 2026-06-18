@@ -1,5 +1,5 @@
 #pragma once
-using namespace std;
+#include <string>
 
 namespace iris {
 
@@ -8,15 +8,11 @@ namespace iris {
 struct ClientConfig {
 
     // ── תקשורת עם השרת ─────────────────────────────────────
-    string serverHost = "127.0.0.1";   // כתובת IP של השרת
-    int    serverPort = 9000;           // פורט TCP
-
-    // ── קבצי Haar Cascade לזיהוי פנים ועיניים ──────────────
-    string faceCascadePath = "C:/iris_demo/haarcascade_frontalface_default.xml";
-    string eyeCascadePath  = "C:/iris_demo/haarcascade_eye.xml";
+    std::string serverHost = "127.0.0.1";   // כתובת IP של השרת
+    int         serverPort = 9000;          // פורט TCP
 
     // ── מצלמה ───────────────────────────────────────────────
-    int cameraIndex = 0;          // 0 = מצלמה ראשונה במחשב
+    int cameraIndex   = 0;        // 0 = מצלמה ראשונה במחשב
     int captureWidth  = 1280;     // רזולוציית צילום (פיקסלים)
     int captureHeight = 720;
 

@@ -1,40 +1,52 @@
-﻿// ============================================================
-//  ConnectionHandler.cpp
-//  Handles one client connection: read → decrypt → process → respond
-// ============================================================
+﻿
 #include "ConnectionHandler.h"
+#include "../security/ReplayGuard.h"
 #include "../protocol/Message.h"
+#include "../protocol/RequestValidator.h"
 #include "../utils/Logger.h"
+#include <openssl/err.h>
 #include <stdexcept>
 #include <cstring>
 #include <vector>
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Constructor
-// ─────────────────────────────────────────────────────────────────────────────
-ConnectionHandler::ConnectionHandler(SOCKET clientSocket,
-                                     std::shared_ptr<IrisProcessor> processor,
-                                     const Encryptor& encryptor)
-    : m_socket(clientSocket)
-    , m_processor(std::move(processor))
+#include <algorithm>
+using namespace std;
+// בנאי המחלקה (Constructor): מקבל ומאתחל את ערוץ ה-SSL, הסוקט, השירות הביומטרי ורכיבי האבטחה עבור החיבור הנוכחי.
+ConnectionHandler::ConnectionHandler(SSL* ssl,
+                                     SOCKET clientSocket,
+                                     shared_ptr<BiometricService> service,
+                                     const Encryptor& encryptor,
+                                     ReplayGuard& replayGuard)
+    : m_ssl(ssl)
+    , m_socket(clientSocket)
+    , m_processor(std::move(service))
     , m_encryptor(encryptor)
+    , m_replayGuard(replayGuard)
 {}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// handle
-// ─────────────────────────────────────────────────────────────────────────────
+// ניהול מחזור החיים של הבקשה: ביצוע לחיצת יד TLS, קריאת הכותרת (Header) וניתוב הבקשה לפונקציה המתאימה.
 void ConnectionHandler::handle()
 {
+    //כאן מתבצעת לחיצת היד של TLS. אם היא נכשלת, מתריע בלוג ומסיים את הטיפול בחיבור.
+    if (SSL_accept(m_ssl) <= 0) {
+        Logger::instance().warning("ConnectionHandler: TLS handshake failed");
+        SSL_free(m_ssl);
+        closesocket(m_socket);
+        return;
+    }
+
     try {
         MessageHeader hdr;
         recvAll(&hdr, sizeof(hdr));
-
+        //בודק האם הכותרת חוקית (Magic Number) ואם לא, מסיים את החיבור.
         if (hdr.magic != MSG_MAGIC) {
             Logger::instance().warning("ConnectionHandler: bad magic, dropping connection");
+            SSL_shutdown(m_ssl);
+            SSL_free(m_ssl);
             closesocket(m_socket);
             return;
         }
 
+        // מנתב את הבקשה לפונקציה המתאימה לפי סוג ההודעה
         switch (hdr.type) {
             case MessageType::VERIFY_REQUEST:
                 handleVerify(hdr.bodyLength);
@@ -52,125 +64,172 @@ void ConnectionHandler::handle()
             std::string("ConnectionHandler exception: ") + e.what());
         try { sendError(e.what()); } catch (...) {}
     }
-
+    // סיום החיבור: סוגר את ערוץ ה-TLS ואת הסוקט
+    SSL_shutdown(m_ssl);
+    SSL_free(m_ssl);
     closesocket(m_socket);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// handleVerify
-// ─────────────────────────────────────────────────────────────────────────────
-void ConnectionHandler::handleVerify(uint32_t bodyLen)
-{
-    if (bodyLen < sizeof(VerifyRequest)) {
-        sendError("VERIFY body too short");
-        return;
-    }
 
-    std::vector<uint8_t> body(bodyLen);
-    recvAll(body.data(), bodyLen);
-
-    VerifyRequest req{};
-    std::memcpy(&req, body.data(), sizeof(req));
-
-    size_t cipherOffset = sizeof(VerifyRequest);
-    size_t cipherSize   = bodyLen - cipherOffset;
-
-    if (req.imageSize == 0 || cipherSize < req.imageSize) {
-        sendError("VERIFY: inconsistent imageSize field");
-        return;
-    }
-
-    // Build IV || ciphertext buffer for decryption
-    std::vector<uint8_t> ivAndCipher(16 + cipherSize);
-    std::memcpy(ivAndCipher.data(),      req.iv, 16);
-    std::memcpy(ivAndCipher.data() + 16, body.data() + cipherOffset, cipherSize);
-
-    std::vector<uint8_t> imageData = m_encryptor.decrypt(ivAndCipher);
-
-    std::string passport(req.passportNumber,
-                         strnlen(req.passportNumber, sizeof(req.passportNumber)));
-
-    Logger::instance().info("VERIFY request: passport=" + passport
-                            + " eye=" + std::to_string(req.eye));
-
-    AuthResult result = m_processor->verify(passport, imageData, req.eye);
-
-    VerifyResponse resp{};
-    resp.success       = result.isMatch() ? 1 : 0;
-    resp.hammingDist   = result.hammingDist;
-    resp.matchedUserID = result.matchedUserID;
-    std::strncpy(resp.matchedName, result.matchedName.c_str(),
-                 sizeof(resp.matchedName) - 1);
-    std::strncpy(resp.message, result.message.c_str(),
-                 sizeof(resp.message) - 1);
-
-    sendResponse(MessageType::VERIFY_RESPONSE, resp);
-
-    Logger::instance().info("VERIFY result: " + result.message
-                            + " HD=" + std::to_string(result.hammingDist));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// handleEnroll
-// ─────────────────────────────────────────────────────────────────────────────
+// ניהול בקשת ENROLL: קריאת הבקשה, ולידציה, פענוח תמונות, עיבוד ושליחת התשובה.
 void ConnectionHandler::handleEnroll(uint32_t bodyLen)
 {
     if (bodyLen < sizeof(EnrollRequest)) {
         sendError("ENROLL body too short");
         return;
     }
-
-    std::vector<uint8_t> body(bodyLen);
+    vector<uint8_t> body(bodyLen);
     recvAll(body.data(), bodyLen);
-
     EnrollRequest req{};
-    std::memcpy(&req, body.data(), sizeof(req));
+    memcpy(&req, body.data(), sizeof(req));
 
-    size_t offset     = sizeof(EnrollRequest);
-    size_t leftCipher = req.leftImageSize;
-    if (offset + leftCipher > bodyLen) {
-        sendError("ENROLL: inconsistent left image size");
+    // ולידציה: חייב בדיוק MAX_ENROLL_IMAGES תמונות לכל עין
+    if (req.numLeftImages != MAX_ENROLL_IMAGES ||
+        req.numRightImages != MAX_ENROLL_IMAGES) {
+        sendError("ENROLL: exactly " + std::to_string(MAX_ENROLL_IMAGES) +
+                  " images per eye are required");
         return;
     }
-    size_t rightCipher = bodyLen - offset - leftCipher;
 
-    // Decrypt left eye image
-    std::vector<uint8_t> ivLeft(16 + leftCipher);
-    std::memcpy(ivLeft.data(),      req.iv, 16);
-    std::memcpy(ivLeft.data() + 16, body.data() + offset, leftCipher);
-    std::vector<uint8_t> leftImage = m_encryptor.decrypt(ivLeft);
+    string passport(req.passengerID, strnlen(req.passengerID, sizeof(req.passengerID)));
+    string fullName(req.fullName, strnlen(req.fullName, sizeof(req.fullName)));
+    string nationality(req.nationality, strnlen(req.nationality, sizeof(req.nationality)));
 
-    // Decrypt right eye image
-    std::vector<uint8_t> ivRight(16 + rightCipher);
-    std::memcpy(ivRight.data(),      req.iv, 16);
-    std::memcpy(ivRight.data() + 16, body.data() + offset + leftCipher, rightCipher);
-    std::vector<uint8_t> rightImage = m_encryptor.decrypt(ivRight);
+    size_t offset = sizeof(EnrollRequest);
 
-    std::string passport(req.passportNumber,
-                         strnlen(req.passportNumber, sizeof(req.passportNumber)));
-    std::string fullName(req.fullName,
-                         strnlen(req.fullName, sizeof(req.fullName)));
-    std::string nationality(req.nationality,
-                            strnlen(req.nationality, sizeof(req.nationality)));
+    // פענוח תמונות עין שמאל
+    vector<vector<uint8_t>> leftImages, rightImages;
+    for (uint8_t i = 0; i < req.numLeftImages; ++i) {
+        uint32_t sz = req.leftImageSizes[i];
+        if (sz == 0 || offset + sz > bodyLen) {
+            sendError("ENROLL: left image size invalid at index " + std::to_string(i));
+            return;
+        }
+        vector<uint8_t> ivAndCipher(16 + sz);
+        memcpy(ivAndCipher.data(),      req.iv, 16);
+        memcpy(ivAndCipher.data() + 16, body.data() + offset, sz);
+        leftImages.push_back(m_encryptor.decrypt(ivAndCipher));
+        offset += sz;
+    }
 
-    Logger::instance().info("ENROLL request: passport=" + passport
-                            + " name=" + fullName);
+    // פענוח תמונות עין ימין
+    for (uint8_t i = 0; i < req.numRightImages; ++i) {
+        uint32_t sz = req.rightImageSizes[i];
+        if (sz == 0 || offset + sz > bodyLen) {
+            sendError("ENROLL: right image size invalid at index " + std::to_string(i));
+            return;
+        }
+        vector<uint8_t> ivAndCipher(16 + sz);
+        memcpy(ivAndCipher.data(),      req.iv, 16);
+        memcpy(ivAndCipher.data() + 16, body.data() + offset, sz);
+        rightImages.push_back(m_encryptor.decrypt(ivAndCipher));
+        offset += sz;
+    }
+
+    Logger::instance().info("ENROLL request: passport=" + passport + " name=" + fullName
+                            + " leftImages=" + std::to_string(req.numLeftImages)
+                            + " rightImages=" + std::to_string(req.numRightImages));
 
     AuthResult result = m_processor->enroll(passport, fullName, nationality,
-                                             leftImage, rightImage);
-
+                                            leftImages, rightImages);
     EnrollResponse resp{};
     resp.success   = result.isMatch() ? 1 : 0;
     resp.newUserID = result.matchedUserID;
-    std::strncpy(resp.message, result.message.c_str(), sizeof(resp.message) - 1);
-
+    strncpy(resp.message, result.message.c_str(), sizeof(resp.message) - 1);
     sendResponse(MessageType::ENROLL_RESPONSE, resp);
     Logger::instance().info("ENROLL result: " + result.message);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// sendResponse  (template + explicit instantiations)
-// ─────────────────────────────────────────────────────────────────────────────
+//ביצוע אימות: קריאת הבקשה, ולידציה, פענוח תמונות, עיבוד ושליחת התשובה.
+void ConnectionHandler::handleVerify(uint32_t bodyLen)
+{
+    if (bodyLen < sizeof(VerifyRequest)) {
+        sendError("VERIFY: body too small");
+        return;
+    }
+
+    vector<uint8_t> body(bodyLen);
+    recvAll(body.data(), bodyLen);
+
+    VerifyRequest req{};
+    memcpy(&req, body.data(), sizeof(req));
+
+    // ולידציה
+    string passport;
+    {
+        string errMsg;
+        if (!RequestValidator::validatePassengerID(
+                req.passengerID, sizeof(req.passengerID), passport, errMsg)) {
+            sendError(errMsg);
+            return;
+        }
+    }
+    if (!m_replayGuard.checkAndRegister(req.nonce, req.timestamp)) {
+        sendError("VERIFY: request expired or already processed (replay protection)");
+        return;
+    }
+    if (req.numLeftImages != MAX_VERIFY_IMAGES || req.numRightImages != MAX_VERIFY_IMAGES) {
+        sendError("VERIFY: exactly 3 images per eye are required");
+        return;
+    }
+
+    string gateName(req.gateName, strnlen(req.gateName, sizeof(req.gateName)));
+    if (gateName.empty()) {
+        sendError("VERIFY: gate name is required");
+        return;
+    }
+    Logger::instance().info("VERIFY request: passport=" + passport
+                            + " gate=" + gateName
+                            + " leftImages=" + std::to_string(req.numLeftImages)
+                            + " rightImages=" + std::to_string(req.numRightImages));
+
+    // פענוח תמונות שמאל
+    vector<vector<uint8_t>> leftImages, rightImages;
+    size_t offset = sizeof(VerifyRequest);
+    for (uint8_t i = 0; i < req.numLeftImages; ++i) {
+        uint32_t sz = req.leftImageSizes[i];
+        if (sz == 0 || offset + sz > bodyLen) { sendError("VERIFY: left image size invalid"); return; }
+        vector<uint8_t> ivAndCipher(16 + sz);
+        memcpy(ivAndCipher.data(),      req.iv, 16);
+        memcpy(ivAndCipher.data() + 16, body.data() + offset, sz);
+        leftImages.push_back(m_encryptor.decrypt(ivAndCipher));
+        offset += sz;
+    }
+    // פענוח תמונות ימין
+    for (uint8_t i = 0; i < req.numRightImages; ++i) {
+        uint32_t sz = req.rightImageSizes[i];
+        if (sz == 0 || offset + sz > bodyLen) { sendError("VERIFY: right image size invalid"); return; }
+        vector<uint8_t> ivAndCipher(16 + sz);
+        memcpy(ivAndCipher.data(),      req.iv, 16);
+        memcpy(ivAndCipher.data() + 16, body.data() + offset, sz);
+        rightImages.push_back(m_encryptor.decrypt(ivAndCipher));
+        offset += sz;
+    }
+
+    AuthResult result = m_processor->verifyForGate(
+        passport, gateName, leftImages, rightImages);
+
+    VerifyResponse resp{};
+    resp.success = result.isMatch() ? 1 : 0;
+    resp.hammingDist = result.hammingDist;
+    resp.matchedUserID = result.matchedUserID;
+    strncpy(resp.matchedName, result.matchedName.c_str(), sizeof(resp.matchedName) - 1);
+    strncpy(resp.flightNumber, result.flightNumber.c_str(), sizeof(resp.flightNumber) - 1);
+    strncpy(resp.seatNumber, result.seatNumber.c_str(), sizeof(resp.seatNumber) - 1);
+    strncpy(resp.message, result.message.c_str(), sizeof(resp.message) - 1);
+    sendResponse(MessageType::VERIFY_RESPONSE, resp);
+    Logger::instance().info("VERIFY result: " + result.message);
+}
+
+// פונקציה עזר לשליחת הודעת שגיאה: יוצרת מבנה ErrorResponse עם ההודעה ומעבירה ל-sendResponse.
+void ConnectionHandler::sendError(const std::string& msg) const
+{
+    ErrorResponse err{};
+    strncpy(err.message, msg.c_str(), sizeof(err.message) - 1);
+    sendResponse(MessageType::ERROR_RESPONSE, err);
+}
+
+// תבנית פונקציה לשליחת תשובה: יוצרת כותרת (Header) ושולחת את הכותרת והגוף (Body) דרך ערוץ ה-SSL.
 template<typename T>
 void ConnectionHandler::sendResponse(MessageType type, const T& body) const
 {
@@ -191,41 +250,32 @@ template void ConnectionHandler::sendResponse<EnrollResponse>(
 template void ConnectionHandler::sendResponse<ErrorResponse>(
     MessageType, const ErrorResponse&) const;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// sendError
-// ─────────────────────────────────────────────────────────────────────────────
-void ConnectionHandler::sendError(const std::string& msg) const
-{
-    ErrorResponse err{};
-    std::strncpy(err.message, msg.c_str(), sizeof(err.message) - 1);
-    sendResponse(MessageType::ERROR_RESPONSE, err);
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// I/O helpers
-// ─────────────────────────────────────────────────────────────────────────────
+
+// שליחה מאובטחת של חבילת מידע בשלמותה (מניעת שברים ברשת)
 void ConnectionHandler::sendAll(const void* data, size_t len) const
 {
     const char* ptr  = reinterpret_cast<const char*>(data);
     size_t      sent = 0;
     while (sent < len) {
-        int n = ::send(m_socket, ptr + sent,
-                       static_cast<int>(len - sent), 0);
-        if (n == SOCKET_ERROR)
+        int n = SSL_write(m_ssl, ptr + sent,
+                          static_cast<int>(len - sent));
+        if (n <= 0)
             throw std::runtime_error("ConnectionHandler::sendAll: "
                                      + std::to_string(WSAGetLastError()));
         sent += static_cast<size_t>(n);
     }
 }
 
+// קליטה ופענוח של מידע מוצפן עד להשלמת החבילה במלואה
 void ConnectionHandler::recvAll(void* data, size_t len) const
 {
     char*  ptr   = reinterpret_cast<char*>(data);
     size_t recvd = 0;
     while (recvd < len) {
-        int n = ::recv(m_socket, ptr + recvd,
-                       static_cast<int>(len - recvd), 0);
-        if (n == 0)
+        int n = SSL_read(m_ssl, ptr + recvd,
+                         static_cast<int>(len - recvd));
+        if (n <= 0)
             throw std::runtime_error(
                 "ConnectionHandler::recvAll: connection closed by peer");
         if (n == SOCKET_ERROR)

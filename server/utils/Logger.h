@@ -2,36 +2,31 @@
 #include <string>
 #include <fstream>
 #include <mutex>
-
-// Use LVL_ prefix to avoid collisions with Windows macros ERROR/DEBUG/WARNING
+using namespace std;
+// מחלקה לוגים פשוטה שמדפיסה למסוף ולקובץ. תומכת ברמות לוגים שונות.
 enum class LogLevel { LVL_DEBUG, LVL_INFO, LVL_WARNING, LVL_ERROR };
 
-// Thread-safe singleton logger.
-// Writes to both stdout and a log file (iris_server.log).
 class Logger {
 public:
-    static Logger& instance();
+    static Logger& instance();// מחזירה את מופע הסינגלטון של ה-Logger.
+    void init(const string& filePath = "iris_server.log");// פותח (או יוצר) את קובץ הלוג. יש לקרוא פעם אחת בהפעלה.
+    // פונקציות נוחות לרמות לוג שונות. כל אחת קוראת ל-log עם הרמה המתאימה.
+    void debug  (const string& msg) { log(LogLevel::LVL_DEBUG,   msg); }
+    void info   (const string& msg) { log(LogLevel::LVL_INFO,    msg); }
+    void warning(const string& msg) { log(LogLevel::LVL_WARNING, msg); }
+    void error  (const string& msg) { log(LogLevel::LVL_ERROR,   msg); }
 
-    // Open (or create) log file. Call once at startup.
-    void init(const std::string& filePath = "iris_server.log");
-
-    void debug  (const std::string& msg) { log(LogLevel::LVL_DEBUG,   msg); }
-    void info   (const std::string& msg) { log(LogLevel::LVL_INFO,    msg); }
-    void warning(const std::string& msg) { log(LogLevel::LVL_WARNING, msg); }
-    void error  (const std::string& msg) { log(LogLevel::LVL_ERROR,   msg); }
-
-    void log(LogLevel level, const std::string& msg);
+    void log(LogLevel level, const string& msg);// כותב שורה עם תאריך/שעה ורמת לוג למסוף ולקובץ (אם פתוח).
 
 private:
-    Logger()  = default;
-    ~Logger();
+    Logger()  = default;// בונה פרטי כדי למנוע יצירת מופעים מחוץ למחלקה.
+    ~Logger();// סוגר את קובץ הלוג אם הוא פתוח.
+    Logger(const Logger&) = delete;// מונע העתקה של ה-Logger (סינגלטון).
+    Logger& operator=(const Logger&) = delete;// מונע השמה של ה-Logger (סינגלטון).
 
-    Logger(const Logger&)            = delete;
-    Logger& operator=(const Logger&) = delete;
+    ofstream m_file;// אובייקט קובץ לכתיבה ללוג.
+    mutex    m_mutex;// מגן על הגישה לקובץ הלוג כדי למנוע בעיות במקרים של ריבוי תהליכים.
 
-    std::ofstream m_file;
-    std::mutex    m_mutex;
-
-    static std::string levelStr(LogLevel level);
-    static std::string timestamp();
+    static string levelStr(LogLevel level);// מחזירה מחרוזת עם שם רמת הלוג.
+    static string timestamp();// מחזירה מחרוזת עם התאריך והשעה הנוכחיים בפורמט "YYYY-MM-DD HH:MM:SS.mmm".
 };

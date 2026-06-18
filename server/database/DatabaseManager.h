@@ -1,7 +1,4 @@
 #pragma once
-// ============================================================
-//  DatabaseManager.h  –  SQL Server ODBC layer
-// ============================================================
 #include <string>
 #include <optional>
 #include <vector>
@@ -10,49 +7,55 @@
 #include <sqlext.h>
 #include "../models/User.h"
 #include "../models/AuthResult.h"
+#include "../security/Encryptor.h"   // הצפנת תבניות ביומטריות במנוחה
+#include "IUserRepository.h"   // מכיל גם את הגדרת GateAccessResult
+using namespace std;
 
-class DatabaseManager {
+// מימוש של IUserRepository שמתחבר למסד נתונים SQL Server באמצעות ODBC.
+class DatabaseManager : public IUserRepository {
 public:
-    // connection string example:
-    // L"DRIVER={ODBC Driver 17 for SQL Server};"
-    // L"SERVER=.\\SQLEXPRESS;DATABASE=IrisRecognitionDB;Trusted_Connection=yes;"
-    explicit DatabaseManager(const std::wstring& connectionString);
-    ~DatabaseManager();
+    explicit DatabaseManager(const wstring& connectionString);// מחבר למסד הנתונים עם מחרוזת החיבור הנתונה. זורק חריגות אם החיבור נכשל.
+    ~DatabaseManager();// סוגר את החיבור למסד הנתונים ומשחרר משאבים. זורק חריגות אם יש בעיה בשחרור המשאבים.
+    DatabaseManager(const DatabaseManager&) = delete;// מונע העתקה של DatabaseManager (סינגלטון).
+    DatabaseManager& operator=(const DatabaseManager&) = delete;// מונע השמה של DatabaseManager (סינגלטון).
 
-    DatabaseManager(const DatabaseManager&)            = delete;
-    DatabaseManager& operator=(const DatabaseManager&) = delete;
+    // מימוש IUserRepository 
+   // רושם משתמש חדש עם תבניות ביומטריות. מחזיר UserID שהוקצה.
+    int enrollUser(const string& passengerID,
+                   const string& fullName,
+                   const string& nationality,
+                   const vector<IrisCode>& irisLeft,
+                   const vector<IrisCode>& irisRight) override;
+    
+    // טוען משתמש + תבניות Iris לפי מזהה נוסע. מחזיר nullopt אם לא נמצא.
+    std::optional<User> getUserByID(const string& passengerID) override;
+    
+    // מחזיר true אם מזהה הנוסע כבר קיים במסד הנתונים.
+    bool userExists(const string& passengerID) override;
 
-    // Enroll: save user + both iris codes (up to 3 templates per eye).
-    // irisLeft[0] and irisRight[0] are mandatory; indices 1 and 2 are optional.
-    // Returns assigned UserID.
-    int enrollUser(const std::string& passportNumber,
-                   const std::string& fullName,
-                   const std::string& nationality,
-                   const std::vector<IrisCode>& irisLeft,
-                   const std::vector<IrisCode>& irisRight);
+    // מחזיר את כל התבניות הביומטריות לנוסע ועין נתונים (0=שמאל, 1=ימין).
+    vector<IrisCode> getAllIrisCodes(const string& passengerID, int eye) override;
+    
+    // בודק האם המשתמש המזהה מורשה לעבור בשער הנוכחי.
+    GateAccessResult checkGateAccess(int userID, const string& gateName) override;
 
-    // Load user + iris codes by passport number. Returns nullopt if not found.
-    std::optional<User> getUserByPassport(const std::string& passportNumber);
-
-    // Returns true if passport number is already in the DB.
-    bool userExists(const std::string& passportNumber);
-
-    // Returns all stored IrisCodes for a given passport + eye (0=Left, 1=Right).
-    // Reads IrisCode1/2/3 from the single row; returns 1–3 entries.
-    std::vector<IrisCode> getAllIrisCodes(const std::string& passportNumber, int eye);
-
-    // Append one row to RecognitionLog.
+    // מתעד ניסיון אימות ב-RecognitionLog.
     void logAuthAttempt(int userID, int eye, bool success,
-                        double hammingDist, const std::string& notes = "");
+                        double hammingDist, const string& notes = "") override;
 
 private:
-    SQLHENV m_hEnv = SQL_NULL_HENV;
-    SQLHDBC m_hDbc = SQL_NULL_HDBC;
+    SQLHENV m_hEnv = SQL_NULL_HENV;//משתנה שמייצג את הסביבה של ODBC, משמש לניהול חיבורים ומשאבים. הוא מאותחל ב-NULL ומוקצה בקונסטרקטור.
+    SQLHDBC m_hDbc = SQL_NULL_HDBC;//משתנה שמייצג את חיבור ODBC למסד הנתונים. הוא מאותחל ב-NULL ומוקצה בקונסטרקטור.
 
-    SQLHSTMT allocStmt() const;
-    static void freeStmt(SQLHSTMT hStmt);
+    // הצפנת תבניות IrisCode לפני שמירה במסד הנתונים —
+    // מפתח נפרד מהצפנת הרשת (IRIS_DB_AES_KEY).
+    // אם משתנה הסביבה לא קיים, DatabaseManager זורק חריגה בהפעלה.
+    Encryptor m_dbEncryptor{ "IRIS_DB_AES_KEY" };
+
+    SQLHSTMT allocStmt() const;// פונקציה עזר שמקצה ומחזירה סטייטמנט ODBC. זורקת חריגה אם ההקצאה נכשלת.
+    static void freeStmt(SQLHSTMT hStmt);// פונקציה עזר שמפנה משאבים של סטייטמנט ODBC. זורקת חריגה אם יש בעיה בשחרור המשאבים.
     static void checkRC(SQLRETURN rc, SQLHANDLE handle,
-                        SQLSMALLINT handleType, const char* context);
-    static std::string  wstrToUtf8(const SQLWCHAR* wstr);
-    static std::wstring strToWide(const std::string& s);
+                        SQLSMALLINT handleType, const char* context);// פונקציה עזר שמוודאת אם קוד החזרה ODBC מציין הצלחה או כישלון. אם יש שגיאה, היא אוספת את פרטי השגיאה ומעלה חריגה עם מידע זה.
+    static string  wstrToUtf8(const SQLWCHAR* wstr);
+    static wstring strToWide(const string& s);
 };

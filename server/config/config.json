@@ -1,7 +1,8 @@
 {
   "port": 9000,
-  "numWorkers": 8,
+  "numWorkers": 4,
   "hammingThreshold": 0.32,
   "normalizedWidth": 512,
-  "normalizedHeight": 64
+  "normalizedHeight": 64,
+  "allowedIPs": []
 }

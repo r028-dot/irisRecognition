@@ -1,13 +1,15 @@
 #include "ThreadPool.h"
+using namespace std;
 
+//בנאי המאגר (Constructor): מייצר את תהליכוני העבודה ומושיב אותם בלולאה אינסופית בהמתנה למשימות חדשות בתור.
 ThreadPool::ThreadPool(size_t numThreads)
 {
     for (size_t i = 0; i < numThreads; ++i) {
         m_workers.emplace_back([this] {
             for (;;) {
-                std::function<void()> task;
+                function<void()> task;
                 {
-                    std::unique_lock<std::mutex> lock(m_mutex);
+                    unique_lock<mutex> lock(m_mutex);
                     m_cv.wait(lock, [this]{
                         return m_stop || !m_tasks.empty();
                     });
@@ -21,11 +23,11 @@ ThreadPool::ThreadPool(size_t numThreads)
         });
     }
 }
-
+// מפרק המאגר (Destructor): מסמן לתהליכונים לעצור, מעיר את כולם וממתין לסיומם המסודר כדי למנוע זליגת זיכרון.
 ThreadPool::~ThreadPool()
 {
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        lock_guard<mutex> lock(m_mutex);
         m_stop = true;
     }
     m_cv.notify_all();
