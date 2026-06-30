@@ -1,0 +1,13 @@
+[req]
+distinguished_name = dn
+prompt = no
+x509_extensions = v3_ext
+
+[dn]
+CN = iris-server
+
+[v3_ext]
+subjectAltName = DNS:localhost,DNS:iris-server,IP:127.0.0.1,IP:10.0.0.3
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,digitalSignature,keyCertSign,keyEncipherment
+

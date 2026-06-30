@@ -1,19 +1,24 @@
 #include "BiometricService.h"
 #include "../database/IUserRepository.h"
 #include "../utils/AccessLogger.h"
+#include "../utils/Logger.h"
 #include <bitset>
 #include <string>
 #include <algorithm>
 using namespace std;
 
+// בנאי המחלקה: מקבל את מאגר הנתונים, פרמטרי נירמול התמונה, סף התאמה ומספר מינימום של תמונות תקינות.
 BiometricService::BiometricService(std::shared_ptr<IUserRepository> db,
-                                    double matchThreshold)
+                                    int normWidth, int normHeight,
+                                    double matchThreshold,
+                                    int minValidProbes)
     : m_db(std::move(db))
-    , m_processor()
+    , m_processor(normWidth, normHeight, matchThreshold)
     , m_matchThreshold(matchThreshold)
+    , m_minValidProbes(minValidProbes)
 {}
 
-
+// אימות ביומטרי: חיפוש משתמש לפי ID, חישוב HD בין תבנית ניסיון לתבניות שמורות, חישוב ממוצע HD (score-level fusion) והחזרת תוצאה.
 AuthResult BiometricService::verify(const string& passengerID,
                                      const vector<vector<uint8_t>>& imageDataList,
                                      int eye)
@@ -24,7 +29,6 @@ AuthResult BiometricService::verify(const string& passengerID,
         result.message = "No probe images supplied";
         return result;
     }
-
     auto userOpt = m_db->getUserByID(passengerID);
     if (!userOpt.has_value()) {
         result.status  = AuthStatus::USER_NOT_FOUND;
@@ -45,46 +49,70 @@ AuthResult BiometricService::verify(const string& passengerID,
     vector<double> perProbeMinHD;
     perProbeMinHD.reserve(imageDataList.size());
     int rejectedProbes = 0;
-
+    int probeIdx = 0;
+    //עובר על כל תמונה מבקשה ובודק אותה מול כל התמונות השמורות של המשתמש הנ"ל שומר לכל תמונה את מרחק מינימלי שקבל מהשוואה מול התמונות לאחר מכן מחושב ממוצע של מרחקים של כל תמונה  
     for (const auto& imageData : imageDataList) {
         IrisCode probe = m_processor.extractCode(imageData);
-
         int validBits = 0;
         for (int i = 0; i < 256; ++i)
             validBits += static_cast<int>(bitset<8>(probe.mask[i]).count());
 
         if (validBits < MIN_VALID_BITS) {
             ++rejectedProbes;
+            Logger::instance().debug(
+                "VERIFY probe rejected: passenger=" + passengerID +
+                " eye=" + to_string(eye) +
+                " idx=" + to_string(probeIdx) +
+                " validBits=" + to_string(validBits) +
+                " minRequired=" + to_string(MIN_VALID_BITS));
         }
         else
         {
         double bestForThisProbe = 1.0;
         for (const IrisCode& stored : storedCodes)
-            bestForThisProbe = min(bestForThisProbe,
-                                        m_processor.compare(probe, stored));
-
+            bestForThisProbe = min(bestForThisProbe, m_processor.compare(probe, stored));
         perProbeMinHD.push_back(bestForThisProbe);
+        Logger::instance().debug(
+            "VERIFY probe accepted: passenger=" + passengerID +
+            " eye=" + to_string(eye) +
+            " idx=" + to_string(probeIdx) +
+            " validBits=" + to_string(validBits) +
+            " bestHD=" + to_string(bestForThisProbe));
         }
+        ++probeIdx;
     }
-
     //אם מספר התמונות התקינות קטן מהמינימום הנדרש, נרשום שגיאה ונחזיר.
-    if (static_cast<int>(perProbeMinHD.size()) < MIN_VALID_PROBES) {
-        result.status        = AuthStatus::LOW_QUALITY;
+    if (static_cast<int>(perProbeMinHD.size()) < m_minValidProbes) {
+        result.status = AuthStatus::LOW_QUALITY;
         result.matchedUserID = user.userID;
-        result.matchedName   = user.fullName;
+        result.matchedName = user.fullName;
         result.message = "Only " + to_string(perProbeMinHD.size()) +
                                " of " + to_string(imageDataList.size()) +
                                " probe images passed quality gate (minimum " +
-                               to_string(MIN_VALID_PROBES) + " required)";
+                               to_string(m_minValidProbes) + " required)";
         AccessLogger::instance().logAccess(passengerID, "", eye, 1.0, false,
                                            "Too few valid probes: " +
                                            to_string(perProbeMinHD.size()));
+        Logger::instance().info(
+            "VERIFY low quality: passenger=" + passengerID +
+            " eye=" + to_string(eye) +
+            " accepted=" + to_string(perProbeMinHD.size()) +
+            " rejected=" + to_string(rejectedProbes) +
+            " minValidProbes=" + to_string(m_minValidProbes));
         return result;
     }
 
     double sum = 0.0;
     for (double d : perProbeMinHD) sum += d;
     const double fusedHD = sum / static_cast<double>(perProbeMinHD.size());
+
+    Logger::instance().info(
+        "VERIFY fusion: passenger=" + passengerID +
+        " eye=" + to_string(eye) +
+        " probesAccepted=" + to_string(perProbeMinHD.size()) +
+        " probesRejected=" + to_string(rejectedProbes) +
+        " fusedHD=" + to_string(fusedHD) +
+        " threshold=" + to_string(m_matchThreshold));
 
     result.hammingDist = fusedHD;
     result.matchedUserID = user.userID;
@@ -103,7 +131,7 @@ AuthResult BiometricService::verify(const string& passengerID,
     return result;
 }
 
-
+// בדיקה האם הנוסע יכול לעבור בשער הנוכחי
 AuthResult BiometricService::verifyForGate(const string& passengerID,
                                             const string& gateName,
                                             const vector<vector<uint8_t>>& leftImages,
@@ -133,10 +161,20 @@ AuthResult BiometricService::verifyForGate(const string& passengerID,
     if (lRes.status != AuthStatus::LOW_QUALITY) minHD = min(minHD, lRes.hammingDist);
     if (rRes.status != AuthStatus::LOW_QUALITY) minHD = min(minHD, rRes.hammingDist);
 
+    Logger::instance().info(
+        "VERIFY gate summary: passenger=" + passengerID +
+        " gate=" + gateName +
+        " leftStatus=" + to_string(static_cast<int>(lRes.status)) +
+        " leftHD=" + to_string(lRes.hammingDist) +
+        " rightStatus=" + to_string(static_cast<int>(rRes.status)) +
+        " rightHD=" + to_string(rRes.hammingDist) +
+        " minHD=" + to_string(minHD) +
+        " threshold=" + to_string(m_matchThreshold));
+
     // נתוני הנוסע מהתשובה הראשונה הזמינה
     result.hammingDist = minHD;
     result.matchedUserID = (lRes.matchedUserID > 0) ? lRes.matchedUserID : rRes.matchedUserID;
-    result.matchedName   = lRes.matchedName.empty() ? rRes.matchedName : lRes.matchedName;
+    result.matchedName = lRes.matchedName.empty() ? rRes.matchedName : lRes.matchedName;
 
     // החלטה ביומטרית לפי מינימום HD 
     if (minHD > m_matchThreshold) {
@@ -149,8 +187,7 @@ AuthResult BiometricService::verifyForGate(const string& passengerID,
     // בדיקת הרשאת שער
     GateAccessResult access = m_db->checkGateAccess(result.matchedUserID, gateName);
     result.flightNumber = access.flightNumber;
-    result.seatNumber   = access.seatNumber;
-
+    result.seatNumber = access.seatNumber;
     if (!access.accessGranted) {
         result.status  = AuthStatus::NO_MATCH;
         result.message = access.reason.empty()

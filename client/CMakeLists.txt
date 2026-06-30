@@ -8,50 +8,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(OpenCV REQUIRED)
 find_package(OpenSSL REQUIRED)
 
-# ── IrisClient — לקוח עם מצלמה ────────────────────────────────────────────
-set(SOURCES
-    main.cpp
-    capture/CameraCapture.cpp
-    preprocessing/ImageQualityCheck.cpp
-    security/Encryptor.cpp
-    network/ServerClient.cpp
-    ui/Display.cpp
-)
-
-add_executable(IrisClient ${SOURCES})
-
-target_include_directories(IrisClient PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${OpenCV_INCLUDE_DIRS}
-    ${OPENSSL_INCLUDE_DIR}
-)
-
-target_link_libraries(IrisClient PRIVATE
-    ${OpenCV_LIBS}
-    OpenSSL::SSL
-    OpenSSL::Crypto
-    ws2_32
-    bcrypt
-)
-
-if(MSVC)
-    target_compile_definitions(IrisClient PRIVATE
-        _CRT_SECURE_NO_WARNINGS
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-    )
-endif()
-
-# ── IrisGateGUI — ממשק גרפי לסימולציית שער (ללא קוד שרת!) ─────────────────
-# הלקוח אחראי על:
-#   1. בחירת 3 תמונות מתוך 7 הנותרות (Laplacian sharpness בלבד)
-#   2. הצפנה: security/Encryptor
-#   3. תקשורת: network/ServerClient
-# כל עיבוד הקשתית, ההשוואה והפסיקה — בשרת בלבד
+# ── IrisGateGUI — ממשק גרפי לסימולציית שער ─────────────────────────────────
 set(GUI_SOURCES
     tools/iris_gate_gui.cpp
     security/Encryptor.cpp
     network/ServerClient.cpp
+    preprocessing/ImageQualityCheck.cpp   # קוד בדיקת האיכות המעודכן שלך
 )
 
 add_executable(IrisGateGUI WIN32 ${GUI_SOURCES})

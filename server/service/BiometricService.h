@@ -6,12 +6,14 @@
 #include "../models/AuthResult.h"
 #include "../iris/IrisProcessor.h"
 using namespace std;
-// שכבת שירות: מתאמת בין אלגוריתם הקשתית (IrisProcessor) לבין מאגר הנתונים (IUserRepository).
-// IrisProcessor עצמו עוסק רק בחילוץ קוד ביומטרי ובהשוואה;
-// BiometricService תלויה אך ורק בממשק IUserRepository — לא במימוש הקונקרטי.
+
+// שירות אימות ביומטריה - שכבת שירות בין API ל-DB
 class BiometricService {
 public:
-    explicit BiometricService(shared_ptr<IUserRepository> db, double matchThreshold = 0.32);
+    explicit BiometricService(shared_ptr<IUserRepository> db, 
+                              int normWidth, int normHeight, 
+                              double matchThreshold,
+                              int minValidProbes = 2);
 
     // אימות 1:1 — multi-shot עם score-level fusion
     AuthResult verify(const string& passengerID,
@@ -33,9 +35,9 @@ public:
 
 private:
     shared_ptr<IUserRepository> m_db;
-    IrisProcessor                     m_processor;  // אלגוריתם בלבד — ללא DB
-    double                            m_matchThreshold;
+    IrisProcessor m_processor;  // אלגוריתם בלבד — ללא DB
+    double m_matchThreshold;
+    int m_minValidProbes;
 
     static constexpr int MIN_VALID_BITS  = 700;  // מינימום ביטים לא-מוסווים לקוד תקין
-    static constexpr int MIN_VALID_PROBES = 2;    // מינימום תמונות תקינות לביצוע fusion
 };

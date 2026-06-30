@@ -1,25 +1,27 @@
 #pragma once
 #include <opencv2/opencv.hpp>
+#include "Segmentation.h"
 using namespace std;
 
-// תיאור אזור הקשתית בתמונה: מרכז ורדיוס האישון, מרכז ורדיוס הקשתית.
-struct IrisRegion {
-    cv::Point2f pupilCenter;
-    float pupilRadius = 0.f;
-    cv::Point2f irisCenter;
-    float irisRadius = 0.f;
-};
+// ─── קבועי מסכת חסימה (Occlusion Mask) ──────────────────────────────────────
+// פיקסלים בהירים מערך זה ייחסמו מהמסכה (השתקפות / עדשה)
+static constexpr int   NORM_BRIGHT_THRESHOLD = 240;
+// פיקסלים כהים מערך זה ייחסמו מהמסכה (ריסים / צל)
+static constexpr int   NORM_DARK_THRESHOLD   = 35;
+// מכפיל MAD לחישוב סף חריגים לכל שורה
+static constexpr double MAD_MULTIPLIER       = 2.5;
+// מינימום ערך MAD (מניעת סף אפסי בתמונות אחידות)
+static constexpr int   MAD_MIN_MAD           = 6;
+// מינימום סף חריגות מוחלט
+static constexpr int   MAD_MIN_DEVIATION     = 15;
+// ─────────────────────────────────────────────────────────────────────────────
 
 // מיישם את מודל Rubber Sheet של Daugman.
 // ממפה את אזור הקשתית הטבעתית לתמונה מלבנית בגודל קבוע.
 class Normalization {
 public:
-    // outWidth  ≈ 512 (רזולוציה זוויתית)
-    // outHeight ≈  64 (רזולוציה רדיאלית)
     Normalization(int outWidth = 512, int outHeight = 64);
 
-    // Unwrap the iris from srcGray into a normalizedWidth x normalizedHeight CV_8UC1 image.
-    // occlusionMask output: same size, 255 = valid pixel, 0 = eyelid / eyelash occlusion.
     cv::Mat normalize(const cv::Mat& srcGray,
                       const IrisRegion& region,
                       cv::Mat& occlusionMask) const;
@@ -28,7 +30,3 @@ private:
     int m_width;
     int m_height;
 };
-
-// Segment the iris in a grayscale eye image using Hough circles.
-// Returns false if segmentation fails.
-bool segmentIris(const cv::Mat& grayEye, IrisRegion& outRegion);

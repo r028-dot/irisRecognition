@@ -15,10 +15,10 @@
 #include <iomanip>
 
 #pragma comment(lib, "Ws2_32.lib")
-// שרת TCP מאובטח (TLS) המנהל את חיבורי השערים במקביל (ThreadPool), מגן מפני התקפות DoS ומנתב בקשות ל-BiometricService.
 
+// שרת TCP מאובטח (TLS) המנהל את חיבורי השערים במקביל (ThreadPool), מגן מפני התקפות DoS ומנתב בקשות ל-BiometricService.
 namespace {
-// קובעים את מספר ה-workers ב-ThreadPool לפי הקונפיגורציה, או לפי מספר הליבות (עם מינימום 4)
+// מחזיר את מספר העובדים (Threads) שישמשו ב-ThreadPool. אם המשתמש הגדר מספר חוקי, משתמש בו. אחרת, מזהה את מספר הליבות ומחזיר את המקסימום בין 4 לבין מספר הליבות.
 int resolveWorkerCount(int configuredWorkers)
 {
     if (configuredWorkers > 0)
@@ -34,7 +34,7 @@ string envOrDefault(const char* envName, const char* fallback)
     const char* v = getenv(envName);
     return (v && *v) ? string(v) : string(fallback);
 }
-} // namespace
+} 
 
 
 //בנאי השרת (Constructor): מאתחל את רשת הווינדוס, מקים ומגדיר את פורט ההאזנה (Socket) וטוען את מפתחות האבטחה (TLS).
@@ -64,9 +64,9 @@ TcpServer::TcpServer(shared_ptr<BiometricService> service, int port, int numWork
                reinterpret_cast<const char*>(&optVal), sizeof(optVal));
     //פרטים על השרת
     sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
+    addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port        = htons(static_cast<u_short>(m_port));
+    addr.sin_port = htons(static_cast<u_short>(m_port));
     //שיוך הכתובת והפורט לסוקט ומתחיל להאזין. אם יש שגיאה, סוגר את הסוקט, מנקה את Winsock, וזורק חריגה עם הודעה ברורה.
     if (::bind(m_listenSocket, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) 
     {
@@ -83,7 +83,6 @@ TcpServer::TcpServer(shared_ptr<BiometricService> service, int port, int numWork
         throw runtime_error("TcpServer: listen() failed: "
                                  + to_string(WSAGetLastError()));
     }
-
     // אתחול TLS — טוען תעודה ומפתח פרטי.
     initTLS();
 }
@@ -124,9 +123,7 @@ void TcpServer::initTLS()
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Destructor
-// ─────────────────────────────────────────────────────────────────────────────
+// Destructor: סוגר את סוקט ההאזנה, משחרר את ה-SSL_CTX ומנקה את Winsock.
 TcpServer::~TcpServer()
 {
     if (m_listenSocket != INVALID_SOCKET) {
@@ -140,32 +137,27 @@ TcpServer::~TcpServer()
     WSACleanup();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// isAllowedIP — בודק אם ה-IP נמצא ב-whitelist.
-// אם ה-whitelist ריק — כל IP מותר (מצב פיתוח).
-// ─────────────────────────────────────────────────────────────────────────────
-bool TcpServer::isAllowedIP(const std::string& ip)
+//בודק אם כתובת ה-IP של הלקוח נמצאת ברשימת ההרשאות (whitelist). אם הרשימה ריקה, כל כתובת מותרת.
+bool TcpServer::isAllowedIP(const string& ip)
 {
     if (m_allowedIPs.empty()) return true;
     return m_allowedIPs.count(ip) > 0;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// isRateLimited — בודק אם ה-IP חרג ממגבלת MAX_RATE בקשות בשנייה.
-// ─────────────────────────────────────────────────────────────────────────────
-bool TcpServer::isRateLimited(const std::string& ip)
+//בודק אם כתובת ה-IP של הלקוח חרגה ממגבלת הקצב (Rate Limit). אם כן, מחזיר true ומונע את הטיפול בבקשה. אחרת, מעדכן את המונה ומחזיר false.
+bool TcpServer::isRateLimited(const string& ip)
 {
     auto now = static_cast<int64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
 
-    std::lock_guard<std::mutex> lock(m_rateMutex);
+    lock_guard<mutex> lock(m_rateMutex);
     auto& entry = m_rateLimiter[ip];
 
     if (entry.windowStart != now) {
         // חלון שנייה חדש — אפס מונה
         entry.windowStart = now;
-        entry.count       = 0;
+        entry.count = 0;
     }
 
     ++entry.count;
@@ -197,9 +189,11 @@ void TcpServer::run()
             int err = WSAGetLastError();
             if (err == WSAEINTR || err == WSAENOTSOCK)
                 break;  // השרת נסגר בזמן המתנה ל-accept, יוצא מהלולאה
-            Logger::instance().warning("TcpServer: accept() error: "
-                                       + std::to_string(err));
-            continue;
+            else
+            {
+                Logger::instance().warning("TcpServer: accept() error: "
+                                           + std::to_string(err));
+            }
         }
 
         // קרא את ה-IP של הלקוח
@@ -211,40 +205,41 @@ void TcpServer::run()
         if (!isAllowedIP(clientIP)) {
             Logger::instance().warning("TcpServer: rejected unlisted IP " + clientIP);
             closesocket(clientSock);
-            continue;
         }
-
-        // בדיקת Rate Limit (מניעת DDoS) 
-        if (isRateLimited(clientIP)) {
+        else if (isRateLimited(clientIP)) {
+            // בדיקת Rate Limit (מניעת DDoS) 
             Logger::instance().warning("TcpServer: rate-limited IP " + clientIP);
             closesocket(clientSock);
-            continue;
         }
 
-        Logger::instance().info("TcpServer: connection from " + clientIP);
-    
-        int noDelay = 1;
-        setsockopt(clientSock, IPPROTO_TCP, TCP_NODELAY,
-                   reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
-
-        // שיוך ה-Socket לאובייקט SSL והעברת הטיפול בחיבור (הלחיצת יד והאימות) למאגר התהליכונים.
-        SSL* ssl = SSL_new(m_sslCtx);
-        if (!ssl) {
-            Logger::instance().warning("TcpServer: SSL_new failed, dropping connection");
-            closesocket(clientSock);
-            continue;
-        }
-        SSL_set_fd(ssl, static_cast<int>(clientSock));
-
-        // העבר את ה-SSL+socket ל-worker thread, עם הפניה למגן ה-Replay המשותף
-        pool.enqueue([ssl,
-                      sock = clientSock,
-                      proc = m_processor,
-                      &enc = m_encryptor,
-                      &guard = m_replayGuard]() mutable
+        else
         {
-            ConnectionHandler handler(ssl, sock, proc, enc, guard);
-            handler.handle();
-        });
+            Logger::instance().info("TcpServer: connection from " + clientIP);
+        
+            int noDelay = 1;
+            setsockopt(clientSock, IPPROTO_TCP, TCP_NODELAY,
+                       reinterpret_cast<const char*>(&noDelay), sizeof(noDelay));
+
+            // שיוך ה-Socket לאובייקט SSL והעברת הטיפול בחיבור (הלחיצת יד והאימות) למאגר התהליכונים.
+            SSL* ssl = SSL_new(m_sslCtx);
+            if (!ssl) {
+                Logger::instance().warning("TcpServer: SSL_new failed, dropping connection");
+                closesocket(clientSock);
+            }
+            else
+            {
+                SSL_set_fd(ssl, static_cast<int>(clientSock));
+                // העבר את ה-SSL+socket ל-worker thread, עם הפניה למגן ה-Replay המשותף
+                pool.enqueue([ssl,
+                              sock = clientSock,
+                              proc = m_proc essor,
+                              &enc = m_encryptor,
+                              &guard = m_replayGuard]() mutable
+                {
+                    ConnectionHandler handler(ssl, sock, proc, enc, guard);
+                    handler.handle();
+                });
+            }
+        }
     }
 }

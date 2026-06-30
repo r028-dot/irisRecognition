@@ -1,6 +1,6 @@
 #pragma once
 #include <string>
-
+using namespace std;
 namespace iris {
 
 // כל ההגדרות של הלקוח במקום אחד.
@@ -8,8 +8,8 @@ namespace iris {
 struct ClientConfig {
 
     // ── תקשורת עם השרת ─────────────────────────────────────
-    std::string serverHost = "127.0.0.1";   // כתובת IP של השרת
-    int         serverPort = 9000;          // פורט TCP
+    string serverHost = "127.0.0.1";   // כתובת IP של השרת
+    int serverPort = 9000;          // פורט TCP
 
     // ── מצלמה ───────────────────────────────────────────────
     int cameraIndex   = 0;        // 0 = מצלמה ראשונה במחשב
@@ -22,4 +22,4 @@ struct ClientConfig {
     double minSharpness  = 100.0; // חדות מינימלית (ערך Laplacian)
 };
 
-} // namespace iris
+} 

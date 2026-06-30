@@ -59,3 +59,15 @@ desktop.ini
 
 # Logs
 *.log
+
+# תמונות בדיקה (CASIA, MMU) — נפח מדי גדולה ל-git
+test_images/
+
+# תעודות TLS ומפתחות פרטיים
+server.crt
+server.key
+client/server.crt
+*.pem
+
+# קובץ zip זמני
+server/iris.zip

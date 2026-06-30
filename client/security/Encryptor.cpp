@@ -6,19 +6,20 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+using namespace std;
 
 namespace iris {
 
-// ── helpers ──────────────────────────────────────────────────────────────
-static std::uint8_t hexNibble(char c)
+//בדיקה אם התו הוא ספרה hex ומחזירה את הערך שלו (0-15). אם לא, זורקת חריגה.
+static uint8_t hexNibble(char c)
 {
-    if (c >= '0' && c <= '9') return static_cast<std::uint8_t>(c - '0');
-    if (c >= 'a' && c <= 'f') return static_cast<std::uint8_t>(c - 'a' + 10);
-    if (c >= 'A' && c <= 'F') return static_cast<std::uint8_t>(c - 'A' + 10);
+    if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+    if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
     throw std::runtime_error("Encryptor: invalid hex character in IRIS_AES_KEY");
 }
 
-void Encryptor::parseHexKey(const char* hex, std::uint8_t* out32)
+void Encryptor::parseHexKey(const char* hex, uint8_t* out32)
 {
     if (std::strlen(hex) != 64)
         throw std::runtime_error(
@@ -36,30 +37,29 @@ static void throwOpenSSLError(const std::string& context)
     throw std::runtime_error(context + ": " + buf);
 }
 
-// ── Constructor ──────────────────────────────────────────────────────────
+//בנאי המחלקה Encryptor: קורא את מפתח ההצפנה AES-256 מהמשתנה הסביבתי IRIS_AES_KEY (hex string באורך 64 תווים) וממיר אותו למערך בתים.
 Encryptor::Encryptor()
 {
-    const char* envKey = std::getenv("IRIS_AES_KEY");
+    const char* envKey = getenv("IRIS_AES_KEY");
     if (!envKey)
-        throw std::runtime_error(
+        throw runtime_error(
             "Encryptor: environment variable IRIS_AES_KEY is not set");
     parseHexKey(envKey, m_key);
 }
 
-// ── encrypt (random IV) ──────────────────────────────────────────────────
-std::vector<std::uint8_t>
-Encryptor::encrypt(const std::vector<std::uint8_t>& plaintext,
-                   std::uint8_t out_iv[16]) const
+//הצפנה של טקסט רגיל (plaintext) עם יצירת IV אקראי. מחזירה את הטקסט המוצפן (ciphertext) וממלאת את out_iv ב-IV שנוצר.
+vector<uint8_t>
+Encryptor::encrypt(const vector<uint8_t>& plaintext,
+                   uint8_t out_iv[16]) const
 {
     if (RAND_bytes(out_iv, 16) != 1)
         throwOpenSSLError("RAND_bytes");
     return encryptWithIV(plaintext, out_iv);
 }
 
-// ── encryptWithIV (caller-supplied IV) ───────────────────────────────────
-std::vector<std::uint8_t>
-Encryptor::encryptWithIV(const std::vector<std::uint8_t>& plaintext,
-                         const std::uint8_t iv[16]) const
+// הצפנה של טקסט רגיל (plaintext) עם IV שניתן כקלט. מחזירה את הטקסט המוצפן (ciphertext).
+vector<uint8_t> Encryptor::encryptWithIV(const vector<uint8_t>& plaintext,
+                         const uint8_t iv[16]) const
 {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     if (!ctx) throwOpenSSLError("EVP_CIPHER_CTX_new");
@@ -88,10 +88,9 @@ Encryptor::encryptWithIV(const std::vector<std::uint8_t>& plaintext,
     return cipher;
 }
 
-// ── decrypt ──────────────────────────────────────────────────────────────
-std::vector<std::uint8_t>
-Encryptor::decrypt(const std::vector<std::uint8_t>& cipher,
-                   const std::uint8_t iv[16]) const
+// מפענח טקסט מוצפן (ciphertext) עם IV שניתן כקלט. מחזירה את הטקסט המפוענח (plaintext).
+vector<uint8_t> Encryptor::decrypt(const vector<uint8_t>& cipher,
+                   const uint8_t iv[16]) const
 {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     if (!ctx) throwOpenSSLError("EVP_CIPHER_CTX_new");
@@ -101,7 +100,7 @@ Encryptor::decrypt(const std::vector<std::uint8_t>& cipher,
         throwOpenSSLError("EVP_DecryptInit_ex");
     }
 
-    std::vector<std::uint8_t> plain(cipher.size() + EVP_MAX_BLOCK_LENGTH);
+    vector<uint8_t> plain(cipher.size() + EVP_MAX_BLOCK_LENGTH);
     int outLen1 = 0, outLen2 = 0;
 
     if (EVP_DecryptUpdate(ctx, plain.data(), &outLen1,
@@ -120,4 +119,4 @@ Encryptor::decrypt(const std::vector<std::uint8_t>& cipher,
     return plain;
 }
 
-} // namespace iris
+} 

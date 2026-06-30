@@ -1,7 +1,10 @@
 #include "IrisProcessor.h"
 using namespace std;
-IrisProcessor::IrisProcessor(double matchThreshold)
-    : m_matchThreshold(matchThreshold)
+
+//אחראי על שכבת האלגוריתם בלבד: חילוץ קוד ביומטרי והשוואת תבניות. אינו מכיר את DatabaseManager ואינו מבצע שאילתות DB.
+IrisProcessor::IrisProcessor(int normWidth, int normHeight, double matchThreshold)
+    : m_extractor(normWidth, normHeight)
+    , m_matchThreshold(matchThreshold)
 {}
 
 IrisCode IrisProcessor::extractCode(const vector<uint8_t>& imageData) const

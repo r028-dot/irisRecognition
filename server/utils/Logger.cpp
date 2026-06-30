@@ -19,16 +19,16 @@ Logger::~Logger()
 void Logger::init(const string& filePath)// פותח (או יוצר) את קובץ הלוג. יש לקרוא פעם אחת בהפעלה.
 {
     lock_guard<mutex> lock(m_mutex);// מגן על הגישה לקובץ הלוג כדי למנוע בעיות במקרים של ריבוי תהליכים.
-    if (m_file.is_open()) m_file.close();// סוגר את הקובץ אם הוא כבר פתוח (אפשרות לאתחול מחדש).
-    m_file.open(filePath, std::ios::app);// פותח את הקובץ במצב הוספה (append) כדי לא למחוק לוגים קיימים.
+    if (m_file.is_open()) m_file.close();
+    m_file.open(filePath, std::ios::app);
 }
 
 void Logger::log(LogLevel level, const string& msg)// כותב שורה עם תאריך/שעה ורמת לוג למסוף ולקובץ (אם פתוח).
 {
     string line = "[" + timestamp() + "] [" + levelStr(level) + "] " + msg;
-    lock_guard<mutex> lock(m_mutex);// מגן על הגישה לקובץ הלוג כדי למנוע בעיות במקרים של ריבוי תהליכים.
-    std::cout << line << '\n';// מדפיס למסוף.
-    if (m_file.is_open())// אם הקובץ פתוח, כותב אליו את השורה.
+    lock_guard<mutex> lock(m_mutex);
+    std::cout << line << '\n';
+    if (m_file.is_open())
         m_file << line << '\n';
 }
 

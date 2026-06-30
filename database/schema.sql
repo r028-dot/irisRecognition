@@ -1,4 +1,5 @@
---יוצר מסד נתונים חדש בשם IrisRecognitionDB
+-- יוצר את מסד הנתונים של המערכת.
+-- אם הוא כבר קיים מהפעם הקודמת — מוחק ומתחיל מחדש.
 IF EXISTS (SELECT name FROM sys.databases WHERE name = N'IrisRecognitionDB')
 BEGIN
     ALTER DATABASE IrisRecognitionDB SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
@@ -12,7 +13,8 @@ GO
 USE IrisRecognitionDB;
 GO
 
--- יוצר טבלת משתמשים עם שדות: UserID- ת"ז, PassengerID- מספר זהות נוסע, FullName- שם מלא, Nationality- לאום, CreatedAt-  תאריך יצירת , IsActive- פעיל/לא פעיל
+-- טבלת משתמשים — כל נוסע שנרשם מקבל כאן שורה.
+-- PassengerID הוא מספר תעודת הזהות של הנוסע.
 CREATE TABLE Users (
     UserID          INT             IDENTITY(1,1)   PRIMARY KEY,
     PassengerID     NVARCHAR(20)    NOT NULL        UNIQUE,
@@ -23,59 +25,105 @@ CREATE TABLE Users (
 );
 GO
 
--- ------------------------------------------------------------
--- Table: IrisFeatures
--- One row per user per eye.  Up to 3 enrollment templates are
--- stored in three columns so that the DB enforces exactly one
--- record per (UserID, Eye) pair.
--- Each IrisCodeN = bits[256] || mask[256] = 512 bytes plaintext.
--- Encrypted: IV(16) + AES-256-CBC ciphertext(528) = 544 bytes stored.
--- IrisCode1 is mandatory; IrisCode2 / IrisCode3 are optional.
--- Eye: 0 = Left, 1 = Right
--- ------------------------------------------------------------
+-- טבלת תכונות קשתית העין.
+-- לכל משתמש שורה לעין שמאל (Eye=0) ושורה לעין ימין (Eye=1).
+-- כל שורה שומרת עד 3 תבניות רישום — ככה ממוצע HD מדויק יותר.
+-- IrisCode = קוד קשתית (256 ביט) + מסכה (256 ביט) = 512 בייט לפני הצפנה.
+-- אחרי הצפנה AES-256-CBC: IV (16 בייט) + טקסט מוצפן = 544 בייט.
+-- מפתח ההצפנה נמצא אצל השרת בלבד, במשתנה סביבה IRIS_DB_AES_KEY.
 CREATE TABLE IrisFeatures (
     FeatureID       INT             IDENTITY(1,1)   PRIMARY KEY,
     UserID          INT             NOT NULL,
     Eye             TINYINT         NOT NULL        CHECK (Eye IN (0, 1)),
-    -- עמודות IrisCode מאוחסנות מוצפנות AES-256-CBC (IV+ciphertext = 544 בתים מקסימום)
-    -- גודל עמודה 560 מספק מרווח. מפתח ב-IRIS_DB_AES_KEY בשרת.
-    IrisCode1       VARBINARY(560)  NOT NULL,       -- primary template (מוצפן)
-    IrisCode2       VARBINARY(560)  NULL,           -- 2nd enrollment (optional, מוצפן)
-    IrisCode3       VARBINARY(560)  NULL,           -- 3rd enrollment (optional, מוצפן)
+    IrisCode1       VARBINARY(560)  NOT NULL,   -- תבנית ראשונה, חובה
+    IrisCode2       VARBINARY(560)  NULL,        -- תבנית שנייה, אופציונלי
+    IrisCode3       VARBINARY(560)  NULL,        -- תבנית שלישית, אופציונלי
     RegisteredAt    DATETIME2       NOT NULL        DEFAULT GETDATE(),
 
     CONSTRAINT FK_IrisFeatures_Users
         FOREIGN KEY (UserID) REFERENCES Users(UserID)
         ON DELETE CASCADE,
 
+    -- מונע כפילות: רק רשומה אחת לכל משתמש לכל עין
     CONSTRAINT UQ_IrisFeatures_UserEye
         UNIQUE (UserID, Eye)
 );
 GO
 
--- RecognitionLog הוסר — לוג גישה מנוהל כעת דרך AccessLogger (CSV) בשרת
 
--- ============================================================
---  Stored Procedures
--- ============================================================
+-- טבלת שערים — כל שער הוא נקודת כניסה בשדה התעופה
+CREATE TABLE Gates (
+    GateID      INT             IDENTITY(1,1)   PRIMARY KEY,
+    GateName    NVARCHAR(10)    NOT NULL        UNIQUE,   -- לדוגמה: A1, B3
+    Terminal    NVARCHAR(10)    NOT NULL        DEFAULT '1'
+);
+GO
 
--- Enroll a new user with both iris codes (up to 3 templates per eye)
+
+-- טבלת טיסות — כל טיסה קשורה לשער ויש לה חלון זמן לעלייה
+
+CREATE TABLE Flights (
+    FlightID        INT             IDENTITY(1,1)   PRIMARY KEY,
+    FlightNumber    NVARCHAR(10)    NOT NULL,        -- לדוגמה: LY315
+    Destination     NVARCHAR(100)   NOT NULL,
+    DepartureTime   DATETIME2       NOT NULL,
+    BoardingStart   DATETIME2       NOT NULL,        -- פתיחת השער לנוסעים
+    BoardingEnd     DATETIME2       NOT NULL,        -- סגירת השער
+    GateID          INT             NOT NULL,
+
+    CONSTRAINT FK_Flights_Gates
+        FOREIGN KEY (GateID) REFERENCES Gates(GateID),
+
+    -- וידוא שחלון העלייה הגיוני
+    CONSTRAINT CK_Flights_BoardingWindow
+        CHECK (BoardingStart < BoardingEnd AND BoardingEnd <= DepartureTime)
+);
+GO
+
+-- טבלת הזמנות — קישור בין נוסע לטיסה
+-- HasBoarded מתעדכן ל-1 ברגע שהנוסע עובר את השער
+CREATE TABLE Bookings (
+    BookingID       INT             IDENTITY(1,1)   PRIMARY KEY,
+    UserID          INT             NOT NULL,
+    FlightID        INT             NOT NULL,
+    SeatNumber      NVARCHAR(5)     NULL,
+    BookedAt        DATETIME2       NOT NULL DEFAULT GETDATE(),
+    HasBoarded      BIT             NOT NULL DEFAULT 0,
+
+    CONSTRAINT FK_Bookings_Users
+        FOREIGN KEY (UserID) REFERENCES Users(UserID)
+        ON DELETE CASCADE,
+
+    CONSTRAINT FK_Bookings_Flights
+        FOREIGN KEY (FlightID) REFERENCES Flights(FlightID)
+        ON DELETE CASCADE,
+
+    CONSTRAINT UQ_Bookings_UserFlight
+        UNIQUE (UserID, FlightID)
+);
+GO
+
+
+-- פרוצדורה: sp_EnrollUser
+-- רושמת נוסע חדש עם קודי קשתית לשתי העיניים.
+-- אם הנוסע כבר קיים — מעדכנת את הקודים.
 CREATE OR ALTER PROCEDURE sp_EnrollUser
     @PassengerID    NVARCHAR(20),
     @FullName       NVARCHAR(100),
     @Nationality    NVARCHAR(50),
-    @IrisLeft1      VARBINARY(560),         -- mandatory
-    @IrisLeft2      VARBINARY(560) = NULL,  -- optional 2nd left template
-    @IrisLeft3      VARBINARY(560) = NULL,  -- optional 3rd left template
-    @IrisRight1     VARBINARY(560),         -- mandatory
-    @IrisRight2     VARBINARY(560) = NULL,  -- optional 2nd right template
-    @IrisRight3     VARBINARY(560) = NULL,  -- optional 3rd right template
+    @IrisLeft1      VARBINARY(560),       
+    @IrisLeft2      VARBINARY(560) = NULL,  
+    @IrisLeft3      VARBINARY(560) = NULL,  
+    @IrisRight1     VARBINARY(560),         
+    @IrisRight2     VARBINARY(560) = NULL,  
+    @IrisRight3     VARBINARY(560) = NULL,  
     @NewUserID      INT OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
     BEGIN TRANSACTION;
     BEGIN TRY
+        -- אם הנוסע לא קיים עדיין — מוסיפים אותו
         IF NOT EXISTS (SELECT 1 FROM Users WHERE PassengerID = @PassengerID)
         BEGIN
             INSERT INTO Users (PassengerID, FullName, Nationality)
@@ -84,7 +132,7 @@ BEGIN
 
         SELECT @NewUserID = UserID FROM Users WHERE PassengerID = @PassengerID;
 
-        -- Upsert left eye — all 3 templates in one row
+        -- עדכון או הוספה של תבניות עין שמאל
         MERGE IrisFeatures AS target
         USING (SELECT @NewUserID AS UserID, CAST(0 AS TINYINT) AS Eye) AS src
         ON target.UserID = src.UserID AND target.Eye = src.Eye
@@ -95,7 +143,7 @@ BEGIN
             INSERT (UserID, Eye, IrisCode1, IrisCode2, IrisCode3)
             VALUES (@NewUserID, 0, @IrisLeft1, @IrisLeft2, @IrisLeft3);
 
-        -- Upsert right eye — all 3 templates in one row
+        -- עדכון או הוספה של תבניות עין ימין
         MERGE IrisFeatures AS target
         USING (SELECT @NewUserID AS UserID, CAST(1 AS TINYINT) AS Eye) AS src
         ON target.UserID = src.UserID AND target.Eye = src.Eye
@@ -115,7 +163,10 @@ BEGIN
 END;
 GO
 
--- Load a user's data + iris codes by passenger ID
+
+-- פרוצדורה: sp_GetUserByID
+-- מחזירה פרטי נוסע וקודי קשתית לפי PassengerID.
+-- משמשת את השרת בעת אימות בשער.
 CREATE OR ALTER PROCEDURE sp_GetUserByID
     @PassengerID NVARCHAR(20)
 AS
@@ -136,74 +187,11 @@ BEGIN
 END;
 GO
 
--- sp_LogAuthAttempt הוסר — AccessLogger (CSV) מחליף את הלוג בDB
 
--- ============================================================
---  Indexes for performance
--- ============================================================
-CREATE INDEX IX_IrisFeatures_UserID        ON IrisFeatures(UserID);
--- RecognitionLog indexes removed (table removed)
-GO
-
--- ============================================================
---  Table: Gates — שערי עלייה למטוס
--- ============================================================
-CREATE TABLE Gates (
-    GateID      INT             IDENTITY(1,1)   PRIMARY KEY,
-    GateName    NVARCHAR(10)    NOT NULL        UNIQUE,   -- A1, B3, C12...
-    Terminal    NVARCHAR(10)    NOT NULL        DEFAULT '1'
-);
-GO
-
--- ============================================================
---  Table: Flights — טיסות
--- ============================================================
-CREATE TABLE Flights (
-    FlightID        INT             IDENTITY(1,1)   PRIMARY KEY,
-    FlightNumber    NVARCHAR(10)    NOT NULL,             -- LY315, EK202...
-    Destination     NVARCHAR(100)   NOT NULL,             -- London, Paris...
-    DepartureTime   DATETIME2       NOT NULL,             -- מתי הטיסה יוצאת
-    BoardingStart   DATETIME2       NOT NULL,             -- מתי פותחים את השער
-    BoardingEnd     DATETIME2       NOT NULL,             -- מתי סוגרים את השער
-    GateID          INT             NOT NULL,
-
-    CONSTRAINT FK_Flights_Gates
-        FOREIGN KEY (GateID) REFERENCES Gates(GateID),
-
-    CONSTRAINT CK_Flights_BoardingWindow
-        CHECK (BoardingStart < BoardingEnd AND BoardingEnd <= DepartureTime)
-);
-GO
-
--- ============================================================
---  Table: Bookings — הזמנות (מי עולה על איזה טיסה)
--- ============================================================
-CREATE TABLE Bookings (
-    BookingID       INT             IDENTITY(1,1)   PRIMARY KEY,
-    UserID          INT             NOT NULL,
-    FlightID        INT             NOT NULL,
-    SeatNumber      NVARCHAR(5)     NULL,                 -- 14A, 32B...
-    BookedAt        DATETIME2       NOT NULL DEFAULT GETDATE(),
-    HasBoarded      BIT             NOT NULL DEFAULT 0,   -- האם כבר עלה למטוס
-
-    CONSTRAINT FK_Bookings_Users
-        FOREIGN KEY (UserID) REFERENCES Users(UserID)
-        ON DELETE CASCADE,
-
-    CONSTRAINT FK_Bookings_Flights
-        FOREIGN KEY (FlightID) REFERENCES Flights(FlightID)
-        ON DELETE CASCADE,
-
-    CONSTRAINT UQ_Bookings_UserFlight
-        UNIQUE (UserID, FlightID)
-);
-GO
-
--- ============================================================
---  Stored Procedure: sp_CheckGateAccess
---  בודקת האם נוסע מורשה לעבור בשער מסוים ברגע זה
---  מחזירה: AccessGranted (1/0), FlightNumber, SeatNumber, Reason
--- ============================================================
+-- פרוצדורה: sp_CheckGateAccess
+-- בודקת אם נוסע מורשה לעבור בשער מסוים ברגע זה.
+-- בודקת שהשער קיים, שיש הזמנה, ושאנחנו בתוך חלון הזמן של העלייה.
+-- מחזירה AccessGranted=1 ומסמנת HasBoarded=1 אם הכל תקין.
 CREATE OR ALTER PROCEDURE sp_CheckGateAccess
     @UserID         INT,
     @GateName       NVARCHAR(10),
@@ -219,7 +207,7 @@ BEGIN
     DECLARE @GateID INT;
     DECLARE @FlightID INT;
 
-    -- מצא את ה-GateID לפי שם השער
+    -- חיפוש השער לפי שם
     SELECT @GateID = GateID FROM Gates WHERE GateName = @GateName;
     IF @GateID IS NULL
     BEGIN
@@ -228,7 +216,7 @@ BEGIN
         RETURN;
     END
 
-    -- חפש הזמנה תקפה: הנוסע רשום לטיסה שיוצאת מהשער הזה, ועכשיו בחלון העלייה
+    -- חיפוש הזמנה תקפה: נוסע + שער נכון + בתוך חלון הזמן + טרם עלה
     SELECT TOP 1
         @FlightID    = f.FlightID,
         @FlightNumber = f.FlightNumber,
@@ -247,7 +235,7 @@ BEGIN
         SET @FlightNumber  = NULL;
         SET @SeatNumber    = NULL;
 
-        -- סיבה מפורטת: האם יש הזמנה אבל בזמן הלא נכון?
+        -- הסבר מפורט מדוע הגישה נדחתה
         IF EXISTS (
             SELECT 1 FROM Bookings b
             JOIN Flights f ON f.FlightID = b.FlightID
@@ -265,7 +253,7 @@ BEGIN
         RETURN;
     END
 
-    -- הכל תקין — עדכן HasBoarded=1 וסמן שעבר
+    -- כל הבדיקות עברו — מסמנים שהנוסע עלה למטוס
     UPDATE Bookings SET HasBoarded = 1
     WHERE UserID = @UserID AND FlightID = @FlightID;
 
@@ -274,22 +262,17 @@ BEGIN
 END;
 GO
 
--- ============================================================
---  Indexes for the new tables
--- ============================================================
+-- אינדקסים לשיפור ביצועים בשאילתות נפוצות
+CREATE INDEX IX_IrisFeatures_UserID    ON IrisFeatures(UserID);
 CREATE INDEX IX_Flights_GateID         ON Flights(GateID);
 CREATE INDEX IX_Flights_BoardingWindow ON Flights(BoardingStart, BoardingEnd);
 CREATE INDEX IX_Bookings_UserID        ON Bookings(UserID);
 CREATE INDEX IX_Bookings_FlightID      ON Bookings(FlightID);
 GO
 
--- AuditLog, triggers removed — AccessLogger (CSV) handles all audit logging
 
--- ============================================================
---  משתמש SQL מוגבל לשרת — EXECUTE בלבד על Stored Procedures.
---  השרת לעולם לא יכול לבצע SELECT/INSERT/UPDATE/DELETE ישיר על הטבלאות.
--- ============================================================
--- שנה את הסיסמה לסיסמה חזקה לפני Deploy בסביבת ייצור!
+-- משתמש SQL מוגבל לשרת — הרשאת EXECUTE בלבד על הפרוצדורות.
+-- השרת לא יכול לגשת ישירות לטבלאות, רק דרך הפרוצדורות.
 IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'IrisServerLogin')
     CREATE LOGIN IrisServerLogin WITH PASSWORD = 'Ch@ngeMe2026!';
 GO
@@ -300,14 +283,13 @@ BEGIN
 END
 GO
 
--- הענק הרשאת EXECUTE בלבד על הפרוצדורות המורשות
 GRANT EXECUTE ON sp_EnrollUser      TO IrisServerUser;
 GRANT EXECUTE ON sp_GetUserByID     TO IrisServerUser;
-GRANT EXECUTE ON sp_CheckGateAccess   TO IrisServerUser;
+GRANT EXECUTE ON sp_CheckGateAccess TO IrisServerUser;
 GO
 
--- וודא שאין גישה ישירה לטבלאות
-DENY SELECT, INSERT, UPDATE, DELETE ON IrisFeatures    TO IrisServerUser;
-DENY SELECT, INSERT, UPDATE, DELETE ON Users           TO IrisServerUser;
-DENY SELECT, INSERT, UPDATE, DELETE ON Bookings        TO IrisServerUser;
+-- מניעת גישה ישירה לטבלאות
+DENY SELECT, INSERT, UPDATE, DELETE ON IrisFeatures TO IrisServerUser;
+DENY SELECT, INSERT, UPDATE, DELETE ON Users        TO IrisServerUser;
+DENY SELECT, INSERT, UPDATE, DELETE ON Bookings     TO IrisServerUser;
 GO

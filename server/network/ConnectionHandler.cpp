@@ -190,7 +190,7 @@ void ConnectionHandler::handleVerify(uint32_t bodyLen)
         uint32_t sz = req.leftImageSizes[i];
         if (sz == 0 || offset + sz > bodyLen) { sendError("VERIFY: left image size invalid"); return; }
         vector<uint8_t> ivAndCipher(16 + sz);
-        memcpy(ivAndCipher.data(),      req.iv, 16);
+        memcpy(ivAndCipher.data(), req.iv, 16);
         memcpy(ivAndCipher.data() + 16, body.data() + offset, sz);
         leftImages.push_back(m_encryptor.decrypt(ivAndCipher));
         offset += sz;
@@ -200,7 +200,7 @@ void ConnectionHandler::handleVerify(uint32_t bodyLen)
         uint32_t sz = req.rightImageSizes[i];
         if (sz == 0 || offset + sz > bodyLen) { sendError("VERIFY: right image size invalid"); return; }
         vector<uint8_t> ivAndCipher(16 + sz);
-        memcpy(ivAndCipher.data(),      req.iv, 16);
+        memcpy(ivAndCipher.data(), req.iv, 16);
         memcpy(ivAndCipher.data() + 16, body.data() + offset, sz);
         rightImages.push_back(m_encryptor.decrypt(ivAndCipher));
         offset += sz;
@@ -222,7 +222,7 @@ void ConnectionHandler::handleVerify(uint32_t bodyLen)
 }
 
 // פונקציה עזר לשליחת הודעת שגיאה: יוצרת מבנה ErrorResponse עם ההודעה ומעבירה ל-sendResponse.
-void ConnectionHandler::sendError(const std::string& msg) const
+void ConnectionHandler::sendError(const string& msg) const
 {
     ErrorResponse err{};
     strncpy(err.message, msg.c_str(), sizeof(err.message) - 1);
@@ -234,14 +234,15 @@ template<typename T>
 void ConnectionHandler::sendResponse(MessageType type, const T& body) const
 {
     MessageHeader hdr{};
-    hdr.magic      = MSG_MAGIC;
-    hdr.type       = type;
+    hdr.magic = MSG_MAGIC;
+    hdr.type = type;
     hdr.bodyLength = static_cast<uint32_t>(sizeof(T));
-    hdr.version    = MSG_VERSION;
+    hdr.version = MSG_VERSION;
 
-    sendAll(&hdr,  sizeof(hdr));
+    sendAll(&hdr, sizeof(hdr));
     sendAll(&body, sizeof(T));
 }
+
 
 template void ConnectionHandler::sendResponse<VerifyResponse>(
     MessageType, const VerifyResponse&) const;
@@ -256,13 +257,11 @@ template void ConnectionHandler::sendResponse<ErrorResponse>(
 void ConnectionHandler::sendAll(const void* data, size_t len) const
 {
     const char* ptr  = reinterpret_cast<const char*>(data);
-    size_t      sent = 0;
+    size_t sent = 0;
     while (sent < len) {
-        int n = SSL_write(m_ssl, ptr + sent,
-                          static_cast<int>(len - sent));
+        int n = SSL_write(m_ssl, ptr + sent, static_cast<int>(len - sent));
         if (n <= 0)
-            throw std::runtime_error("ConnectionHandler::sendAll: "
-                                     + std::to_string(WSAGetLastError()));
+            throw runtime_error("ConnectionHandler::sendAll: " + to_string(WSAGetLastError()));
         sent += static_cast<size_t>(n);
     }
 }
@@ -270,17 +269,14 @@ void ConnectionHandler::sendAll(const void* data, size_t len) const
 // קליטה ופענוח של מידע מוצפן עד להשלמת החבילה במלואה
 void ConnectionHandler::recvAll(void* data, size_t len) const
 {
-    char*  ptr   = reinterpret_cast<char*>(data);
+    char*  ptr = reinterpret_cast<char*>(data);
     size_t recvd = 0;
     while (recvd < len) {
-        int n = SSL_read(m_ssl, ptr + recvd,
-                         static_cast<int>(len - recvd));
+        int n = SSL_read(m_ssl, ptr + recvd, static_cast<int>(len - recvd));
         if (n <= 0)
-            throw std::runtime_error(
-                "ConnectionHandler::recvAll: connection closed by peer");
+            throw runtime_error("ConnectionHandler::recvAll: connection closed by peer");
         if (n == SOCKET_ERROR)
-            throw std::runtime_error("ConnectionHandler::recvAll: "
-                                     + std::to_string(WSAGetLastError()));
+            throw runtime_error("ConnectionHandler::recvAll: "+ to_string(WSAGetLastError()));
         recvd += static_cast<size_t>(n);
     }
 }

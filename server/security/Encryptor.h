@@ -8,9 +8,9 @@ class Encryptor {
 public:
     // יוצר Encryptor עם מפתח שנלקח מהמשתנה הסביבה הנתון (או "IRIS_AES_KEY" כברירת מחדל). המפתח חייב להיות מחרוזת hex של 64 תווים (32 bytes).
     explicit Encryptor(const char* envVarName = "IRIS_AES_KEY");
-    //פונקציה שמצפינה את המסר ומחזירה אותו מוצפן משורשר עם IV 16 בתים (IV || ciphertext). זורקת חריגה אם יש בעיה בהצפנה.
+    //פונקציה שמצפינה את המסר
     vector<uint8_t> encrypt(const vector<uint8_t>& plaintext) const;
-    // פונקציה שמפענחת את המסר המוצפן (IV || ciphertext) ומחזירה את הטקסט המקורי. זורקת חריגה אם יש בעיה בפענוח.
+  //פונקציה שמפענחת את המסר
     vector<uint8_t> decrypt(const vector<uint8_t>& ivAndCipher) const;
 private:
     uint8_t m_key[32] = {};// מפתח AES-256 (32 bytes). מאוחסן כמערך של בתים בינאריים.

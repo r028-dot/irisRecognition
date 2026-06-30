@@ -29,12 +29,12 @@ private:
     SSL_CTX* m_sslCtx = nullptr;
     void initTLS();   // יוצר context וטוען cert+key
     Encryptor m_encryptor;
-    std::unordered_set<std::string> m_allowedIPs;
+    std::unordered_set<string> m_allowedIPs;
     static constexpr int MAX_RATE = 5;
     struct RateLimitEntry { int count; int64_t windowStart; };
-    std::unordered_map<std::string, RateLimitEntry> m_rateLimiter;
+    std::unordered_map<string, RateLimitEntry> m_rateLimiter;
     std::mutex m_rateMutex;
     ReplayGuard m_replayGuard;
-    bool isAllowedIP  (const std::string& ip);   
-    bool isRateLimited(const std::string& ip);   
+    bool isAllowedIP (const string& ip);   
+    bool isRateLimited(const string& ip);   
 };

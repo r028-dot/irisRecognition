@@ -4,12 +4,10 @@
 #include "FeatureExtractor.h"
 #include "IrisMatcher.h"
 
-// שכבת אלגוריתם בלבד: חילוץ IrisCode מתמונה גולמית והשוואה בין תבניות.
-// אינה מכירה את DatabaseManager ואינה מבצעת שאילתות DB.
-// ראה BiometricService לתיאום לוגיקה עסקית + DB.
+
 class IrisProcessor {
 public:
-    explicit IrisProcessor(double matchThreshold = 0.32);
+    explicit IrisProcessor(int normWidth, int normHeight, double matchThreshold);
 
     // חילוץ IrisCode מתמונת עין גולמית
     IrisCode extractCode(const std::vector<uint8_t>& imageData) const;
@@ -21,6 +19,6 @@ public:
 
 private:
     FeatureExtractor m_extractor;
-    IrisMatcher      m_matcher;
-    double           m_matchThreshold;
+    IrisMatcher m_matcher;
+    double m_matchThreshold;
 };

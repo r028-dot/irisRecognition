@@ -4,14 +4,14 @@
 #include <windows.h>
 #include <nlohmann/json.hpp>
 using namespace std;
-// Convert UTF-8 → wide string using the Win32 API (handles all code points
-// correctly; the `wstring(s.begin(), s.end())` trick only works for ASCII).
-static std::wstring utf8ToWide(const std::string& s)
+
+// מפעילה את הקובץ ומעבירה טקסט בפורמט UTF-8 לUTF-16
+static std::wstring utf8ToWide(const string& s)
 {
     if (s.empty()) return {};
     int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
     if (len <= 1) return {};
-    std::wstring out(static_cast<size_t>(len - 1), L'\0');
+    wstring out(static_cast<size_t>(len - 1), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), len);
     return out;
 }
@@ -20,31 +20,38 @@ static std::wstring utf8ToWide(const std::string& s)
 //וממירה אותן לקובץ ServerConfig עם טיפוסי נתונים מתאימים לשימוש בשרת.
 ServerConfig ServerConfig::loadFromFile(const string& jsonPath)
 {
-    std::ifstream file(jsonPath);// מנסה לפתוח את הקובץ בנתיב הנתון.
-    if (!file.is_open())// אם לא מצליח לפתוח את הקובץ, זורק חריגה עם הודעה ברורה.
+   // פותח את הקובץ לקריאה. אם לא מצליח, זורק חריגה עם הודעה ברורה.
+    std::ifstream file(jsonPath);
+    if (!file.is_open())
         throw runtime_error("ServerConfig: cannot open '" + jsonPath + "'");
-    nlohmann::json j;//משתנה מסוג json של ספריית nlohmann, ישמש לקריאת הנתונים מהקובץ.
-    file >> j;//שופך לתוך משתנה את כל מה שקרא מהקובץ וממיר אותו למבנה נתונים של json.
+    nlohmann::json j;
+    file >> j;
 
-    ServerConfig cfg;//יוצר מופע של הגדרות ברירת מחדל, שיתעדכן עם הערכים מהקובץ.
-
-    if (j.contains("port")) //אם הקובץ מכיל את השדה פורט מעדכן את הערך במבנה ההגדרות
+    ServerConfig cfg;
+   // אם קיימים ערכים בקובץ JSON, מעדכן את השדות המתאימים ב-ServerConfig. אם לא, נשארים הערכים כברירת מחדל.
+    if (j.contains("port"))
        cfg.port = j["port"].get<int>();
-    if (j.contains("numWorkers"))//אם הקובץ מכיל את השדה numWorkers מעדכן את הערך במבנה ההגדרות
+    if (j.contains("numWorkers"))
        cfg.numWorkers = j["numWorkers"].get<int>();
-    if (j.contains("hammingThreshold"))//אם הקובץ מכיל את השדה hammingThreshold מעדכן את הערך במבנה ההגדרות
+    if (j.contains("hammingThreshold"))
        cfg.hammingThreshold = j["hammingThreshold"].get<double>();
-    if (j.contains("normalizedWidth"))//אם הקובץ מכיל את השדה normalizedWidth מעדכן את הערך במבנה ההגדרות
+    if (j.contains("normalizedWidth"))
        cfg.normalizedWidth = j["normalizedWidth"].get<int>();
-    if (j.contains("normalizedHeight"))//אם הקובץ מכיל את השדה normalizedHeight מעדכן את הערך במבנה ההגדרות
+    if (j.contains("normalizedHeight"))
        cfg.normalizedHeight = j["normalizedHeight"].get<int>();
-    if (j.contains("dbConnectionString"))//אם הקובץ מכיל את השדה dbConnectionString מעדכן את הערך במבנה ההגדרות
+    if (j.contains("maxVerifyImages"))
+       cfg.maxVerifyImages = j["maxVerifyImages"].get<int>();
+    if (j.contains("maxEnrollImages"))
+       cfg.maxEnrollImages = j["maxEnrollImages"].get<int>();
+    if (j.contains("minValidProbes"))
+       cfg.minValidProbes = j["minValidProbes"].get<int>();
+    if (j.contains("dbConnectionString"))
        cfg.dbConnectionString = utf8ToWide(j["dbConnectionString"].get<string>());
-    if (j.contains("allowedIPs") && j["allowedIPs"].is_array()) //אם הקובץ מכיל את השדה allowedIPs והוא מערך, מעדכן את הערך במבנה ההגדרות
+    if (j.contains("allowedIPs") && j["allowedIPs"].is_array())
     {
-        cfg.allowedIPs.clear();//מנק מכל כתובות שאולי היו פעם
-        for (const auto& ip : j["allowedIPs"])//רץ על רשימה ומכניס כתובות אח אחת לקובץ הגדרות
+        cfg.allowedIPs.clear();
+        for (const auto& ip : j["allowedIPs"])
             cfg.allowedIPs.push_back(ip.get<string>());
     }
-    return cfg;//מחזיר את קובץ הגדרות
+    return cfg;
 }

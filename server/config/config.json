@@ -4,5 +4,8 @@
   "hammingThreshold": 0.32,
   "normalizedWidth": 512,
   "normalizedHeight": 64,
+  "maxVerifyImages": 3,
+  "maxEnrollImages": 3,
+  "minValidProbes": 2,
   "allowedIPs": []
 }

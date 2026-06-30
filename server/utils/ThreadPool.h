@@ -7,7 +7,7 @@
 #include <functional>
 #include <future>
 #include <stdexcept>
-
+using namespace std;
 // מאגר תהליכונים (ThreadPool): מנהל קבוצה קבועה של תהליכוני עבודה ותור משימות לטיפול מקבילי בבקשות השרת.
 class ThreadPool {
 public:
@@ -40,9 +40,9 @@ auto ThreadPool::enqueue(F&& f, Args&&... args)
         std::bind(std::forward<F>(f), std::forward<Args>(args)...));
     std::future<R> fut = task->get_future();
     {
-        std::lock_guard<mutex> lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         if (m_stop)
-            throw runtime_error("ThreadPool: enqueue on stopped pool");
+            throw std::runtime_error("ThreadPool: enqueue on stopped pool");
         m_tasks.emplace([task]{ (*task)(); });
     }
     m_cv.notify_one();

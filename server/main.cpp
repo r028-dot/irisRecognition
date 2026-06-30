@@ -57,32 +57,37 @@ static string locateConfig()
 
 int main()
 {
-    Logger::instance().init("iris_server.log");// פותח את קובץ הלוג הראשי של השרת (או יוצר אותו אם לא קיים).
-    AccessLogger::instance().init("logs");     // פותח access_log.csv ו-changes_log.csv בתיקיית logs/
-    Logger::instance().info("=== Iris Recognition Server starting ===");// כותב שורת פתיחה ללוג הראשי של השרת.
+    // אתחול מערכת הלוגים והלוגר של המעברים והשינויים. אם יש בעיה בפתיחת קבצי הלוג, זורק חריגה עם הודעה ברורה.
+    Logger::instance().init("iris_server.log");
+    AccessLogger::instance().init("logs");
+    Logger::instance().info("=== Iris Recognition Server starting NEW VERSION ===" );
 
     try {
         // שלב 1: בדיקות מוקדמות על משתני סביבה וקבצי TLS 
-        requireEnvVar("IRIS_AES_KEY");      // מפתח הצפנת תקשורת
-        requireEnvVar("IRIS_DB_AES_KEY");   // מפתח הצפנת בסיס הנתונים
-        requireFile("IRIS_TLS_CERT", "server.crt", "תעודת TLS");// מוודא שקובץ תעודת TLS קיים (לפי משתנה סביבה או ברירת מחדל).
-        requireFile("IRIS_TLS_KEY",  "server.key", "מפתח פרטי TLS");// מוודא שקובץ מפתח פרטי TLS קיים (לפי משתנה סביבה או ברירת מחדל).
-        Logger::instance().info("בדיקות מוקדמות עברו בהצלחה (env vars + TLS files)");// כותב ללוג שהבדיקות המוקדמות עברו בהצלחה.
+        requireEnvVar("IRIS_AES_KEY");
+        requireEnvVar("IRIS_DB_AES_KEY");
+        requireFile("IRIS_TLS_CERT", "server.crt", "תעודת TLS");
+        requireFile("IRIS_TLS_KEY",  "server.key", "מפתח פרטי TLS");
+        Logger::instance().info("בדיקות מוקדמות עברו בהצלחה (env vars + TLS files)");
 
         // שלב 2: טעינת תצורה מקובץ JSON (עם בדיקת תקינות בסיסית)
-        const string cfgPath = locateConfig();// מחפש את קובץ התצורה במספר מיקומים אפשריים ומחזיר את הנתיב הראשון שמצא.
-        ServerConfig cfg = ServerConfig::loadFromFile(cfgPath);// טוען את התצורה מקובץ JSON ומחזיר אובייקט ServerConfig.
-        validateConfig(cfg);// בודק את תקינות הפרמטרים הבסיסיים של התצורה (פורט, מספר עובדים, סף מרחק מינג, מחרוזת חיבור DB).
+        const string cfgPath = locateConfig();
+        ServerConfig cfg = ServerConfig::loadFromFile(cfgPath);
+        validateConfig(cfg);
         Logger::instance().info("Config loaded from " + cfgPath
                                 + " - port=" + to_string(cfg.port)
                                 + " workers=" + to_string(cfg.numWorkers));
 
         // שלב 3: מייצר את שכב ת בסיס הנתונים — DatabaseManager מיישם IUserRepository
-        auto db = std::make_shared<DatabaseManager>(cfg.dbConnectionString);// יוצר מופע של DatabaseManager עם מחרוזת החיבור לבסיס הנתונים.
+        auto db = std::make_shared<DatabaseManager>(cfg.dbConnectionString);
         Logger::instance().info("Connected to IrisRecognitionDB");
 
         // שלב 4: מייצר את שירות הביומטריה — BiometricService משתמש ב-DatabaseManager ובאלגוריתם IRIS
-        auto service = std::make_shared<BiometricService>(db, cfg.hammingThreshold);
+        auto service = std::make_shared<BiometricService>(db, 
+                                                           cfg.normalizedWidth,
+                                                           cfg.normalizedHeight,
+                                                           cfg.hammingThreshold,
+                                                           cfg.minValidProbes);
 
         // שלב 5: הפעל שרת 
         Logger::instance().info("Listening on port " + to_string(cfg.port) + "...");

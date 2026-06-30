@@ -4,12 +4,13 @@
 #include <ws2tcpip.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include <bcrypt.h>          // BCryptGenRandom ל-nonce קריפטוגראפי
-#include <chrono>            // timestamp Unix
-#include <cstdlib>           // getenv
+#include <bcrypt.h>          
+#include <chrono>          
+#include <cstdlib>        
 #include <stdexcept>
 #include <cstring>
 #include <string>
+#include <cassert>
 
 #pragma comment(lib, "bcrypt.lib")
 
@@ -17,7 +18,7 @@
 using namespace std;
 namespace iris {
 
-// ── Constructor / Destructor ────────────────────────────────────────────
+//בנאי המחלקה: מאתחל את כתובת השרת והפורט, מעלה את ספריית Winsock ומאתחל את TLS בצד לקוח.
 ServerClient::ServerClient(const ClientConfig& config)
     : m_host(config.serverHost), m_port(config.serverPort)
 {
@@ -25,29 +26,26 @@ ServerClient::ServerClient(const ClientConfig& config)
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
         throw std::runtime_error("ServerClient: WSAStartup failed");
 
-    // ── אתחול TLS בצד לקוח ──────────────────────────────────────────────
+    //  אתחול TLS בצד לקוח 
     m_ctx = SSL_CTX_new(TLS_client_method());
     if (!m_ctx)
-        throw std::runtime_error("ServerClient: SSL_CTX_new failed");
+        throw runtime_error("ServerClient: SSL_CTX_new failed");
 
-    // דורש TLS 1.2 ומעלה
     SSL_CTX_set_min_proto_version(m_ctx, TLS1_2_VERSION);
 
     // אימות תעודת השרת מול תעודה "נעוצה" (certificate pinning): הלקוח סומך
     // אך ורק על התעודה המקומית server.crt. כך לא ניתן להתחזות לשרת גם אם
     // תוקף שולט בערוץ הרשת (הגנה מפני Man-in-the-Middle).
-    const char* caEnv = std::getenv("IRIS_TLS_CA");
-    const std::string caPath = (caEnv && *caEnv) ? std::string(caEnv)
-                                                 : std::string("server.crt");
+    const char* caEnv = getenv("IRIS_TLS_CA");
+    const string caPath = (caEnv && *caEnv) ? string(caEnv) : string("server.crt");
     if (SSL_CTX_load_verify_locations(m_ctx, caPath.c_str(), nullptr) != 1) {
         SSL_CTX_free(m_ctx);
         m_ctx = nullptr;
-        throw std::runtime_error("ServerClient: failed to load server certificate: "
-                                 + caPath);
+        throw runtime_error("ServerClient: failed to load server certificate: " + caPath);
     }
     SSL_CTX_set_verify(m_ctx, SSL_VERIFY_PEER, nullptr);
 }
-
+//  מחלקת ServerClient: משחררת את הקשר TLS ומנקה את ספריית Winsock.
 ServerClient::~ServerClient()
 {
     if (m_ctx) {
@@ -55,67 +53,6 @@ ServerClient::~ServerClient()
         m_ctx = nullptr;
     }
     WSACleanup();
-}
-
-//  verify 
-// שולח שתי עיניים בפנייה אחת; השרת מחשב ממוצע HD ומשווה לסף.
-AuthResponse ServerClient::verify(
-
-        // ── Read response header ────────────────────────────────
-        MessageHeader respHdr{};
-        recvAll(ssl, &respHdr, sizeof(respHdr));
-
-        if (respHdr.magic != MSG_MAGIC)
-            throw std::runtime_error("Invalid response magic from server");
-
-        // ── Server-side error ────────────────────────────────────────────
-        if (respHdr.type == MessageType::ERROR_RESPONSE) {
-            ErrorResponse err{};
-            recvAll(ssl, &err, sizeof(err));
-            resp.status  = AuthStatus::COMM_ERROR;
-            resp.message = std::string(err.message,
-                                       strnlen(err.message, sizeof(err.message)));
-            if (ssl) {
-                int fd = SSL_get_fd(ssl);
-                SSL_shutdown(ssl);
-                SSL_free(ssl);
-                if (fd >= 0) closesocket(static_cast<SOCKET>(fd));
-            }
-            return resp;
-        }
-
-        if (respHdr.type != MessageType::VERIFY_RESPONSE)
-            throw std::runtime_error("Unexpected response type from server");
-
-        // ── Read VerifyResponse struct ───────────────────────────────────
-        VerifyResponse v{};
-        recvAll(ssl, &v, sizeof(v));
-
-        resp.status        = (v.success == 1) ? AuthStatus::AUTHORIZED
-                                              : AuthStatus::DENIED;
-        resp.hammingDist   = v.hammingDist;
-        resp.matchedUserID = v.matchedUserID;
-        resp.matchedName   = std::string(v.matchedName,
-                                          strnlen(v.matchedName, sizeof(v.matchedName)));
-        resp.flightNumber  = std::string(v.flightNumber,
-                          strnlen(v.flightNumber, sizeof(v.flightNumber)));
-        resp.seatNumber    = std::string(v.seatNumber,
-                          strnlen(v.seatNumber, sizeof(v.seatNumber)));
-        resp.message       = std::string(v.message,
-                                          strnlen(v.message, sizeof(v.message)));
-    }
-    catch (const std::exception& e) {
-        resp.status  = AuthStatus::COMM_ERROR;
-        resp.message = e.what();
-    }
-
-    if (ssl) {
-        int fd = SSL_get_fd(ssl);
-        SSL_shutdown(ssl);
-        SSL_free(ssl);
-        if (fd >= 0) closesocket(static_cast<SOCKET>(fd));
-    }
-    return resp;
 }
 
 // חיבור לשרת 
@@ -130,12 +67,22 @@ SSL* ServerClient::connectToServer() const
                     &hints, &res) != 0)
         throw runtime_error("getaddrinfo failed for host: " + m_host);
 
+    if (!res)
+        throw runtime_error("getaddrinfo returned null result");
+
+    assert(res != nullptr); 
     SOCKET sock = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (sock == INVALID_SOCKET) {
         freeaddrinfo(res);
         throw runtime_error("socket() failed");
     }
 
+    if (!res->ai_addr || res->ai_addrlen == 0) {
+        freeaddrinfo(res);
+        closesocket(sock);
+        throw runtime_error("invalid address info from getaddrinfo");
+    }
+    assert(res->ai_addr != nullptr); 
     if (::connect(sock, res->ai_addr,
                   static_cast<int>(res->ai_addrlen)) != 0) {
         freeaddrinfo(res);
@@ -143,6 +90,7 @@ SSL* ServerClient::connectToServer() const
         throw runtime_error("connect() failed to " +
                                   m_host + ":" + to_string(m_port));
     }
+
     freeaddrinfo(res);
 
     // הקמת SSL מעל ה-socket המחובר
@@ -152,7 +100,6 @@ SSL* ServerClient::connectToServer() const
         throw runtime_error("SSL_new failed");
     }
     SSL_set_fd(ssl, static_cast<int>(sock));
-
     if (SSL_connect(ssl) != 1) {
         SSL_free(ssl);
         closesocket(sock);
@@ -167,24 +114,31 @@ SSL* ServerClient::connectToServer() const
     return ssl;
 }
 
-// ── I/O helpers ─────────────────────────────────────────────────────────
+//  sendAll: שולח את כל הנתונים ב-buffer דרך ערוץ ה-SSL, עד להשלמתם.
 void ServerClient::sendAll(SSL* ssl, const void* buf, std::size_t len) const
 {
     const char* p   = static_cast<const char*>(buf);
     std::size_t off = 0;
     while (off < len) {
         int n = SSL_write(ssl, p + off, static_cast<int>(len - off));
-        if (n <= 0)
-            throw runtime_error("send() failed (TLS)");
+        if (n <= 0) {
+            int err = SSL_get_error(ssl, n);
+            char errBuf[256] = {};
+            ERR_error_string_n(ERR_get_error(), errBuf, sizeof(errBuf));
+            throw runtime_error(string("send() failed (TLS): SSL_error=") + 
+                              to_string(err) + " " + errBuf);
+        }
         off += static_cast<std::size_t>(n);
     }
 }
 
+//  recvAll: קורא את כל הנתונים מהערוץ ה-SSL ל-buffer, עד להשלמתם.
 void ServerClient::recvAll(SSL* ssl, void* buf, std::size_t len) const
 {
-    char*       p   = static_cast<char*>(buf);
+    char* p = static_cast<char*>(buf);
     std::size_t off = 0;
-    while (off < len) {
+    while (off < len) 
+    {
         int n = SSL_read(ssl, p + off, static_cast<int>(len - off));
         if (n <= 0)
             throw std::runtime_error("recv() failed or connection closed (TLS)");
@@ -192,35 +146,33 @@ void ServerClient::recvAll(SSL* ssl, void* buf, std::size_t len) const
     }
 }
 
-// ── enroll ──────────────────────────────────────────────────────────────────
+//  enroll 
 // שולח עד MAX_ENROLL_IMAGES תמונות לכל עין לשרת לצורך רישום ביומטרי.
 // כל התמונות מוצפנות AES-CBC עם אותו IV.
-EnrollResult ServerClient::enroll(const std::string&                            passengerID,
-                                   const std::string&                            fullName,
-                                   const std::string&                            nationality,
-                                   const std::uint8_t                            iv[16],
-                                   const std::vector<std::vector<std::uint8_t>>& encryptedLeft,
-                                   const std::vector<std::vector<std::uint8_t>>& encryptedRight) const
+EnrollResult ServerClient::enroll(const string& passengerID,
+                                   const string& fullName,
+                                   const string& nationality,
+                                   const uint8_t iv[16],
+                                   const vector<vector<uint8_t>>& encryptedLeft,
+                                   const vector<vector<uint8_t>>& encryptedRight) const
 {
     EnrollResult result;
-
-    if (encryptedLeft.empty()  || encryptedLeft.size()  > MAX_ENROLL_IMAGES ||
+    if (encryptedLeft.empty() || encryptedLeft.size() > MAX_ENROLL_IMAGES ||
         encryptedRight.empty() || encryptedRight.size() > MAX_ENROLL_IMAGES) {
         result.message = "enroll: invalid image count (1.." +
-                         std::to_string(MAX_ENROLL_IMAGES) + " per eye)";
+                         to_string(MAX_ENROLL_IMAGES) + " per eye)";
         return result;
     }
 
     SSL* ssl = nullptr;
     try {
         ssl = connectToServer();
-
         // בניית EnrollRequest
         EnrollRequest req{};
-        std::strncpy(req.passengerID,  passengerID.c_str(),  sizeof(req.passengerID)  - 1);
-        std::strncpy(req.fullName,     fullName.c_str(),     sizeof(req.fullName)     - 1);
-        std::strncpy(req.nationality,  nationality.c_str(),  sizeof(req.nationality)  - 1);
-        std::memcpy(req.iv, iv, 16);
+        strncpy(req.passengerID, passengerID.c_str(), sizeof(req.passengerID) - 1);
+        strncpy(req.fullName, fullName.c_str(), sizeof(req.fullName) - 1);
+        strncpy(req.nationality, nationality.c_str(), sizeof(req.nationality) - 1);
+        memcpy(req.iv, iv, 16);
         req.numLeftImages  = static_cast<uint8_t>(encryptedLeft.size());
         req.numRightImages = static_cast<uint8_t>(encryptedRight.size());
 
@@ -237,10 +189,10 @@ EnrollResult ServerClient::enroll(const std::string&                            
 
         // כותרת
         MessageHeader hdr{};
-        hdr.magic      = MSG_MAGIC;
-        hdr.type       = MessageType::ENROLL_REQUEST;
+        hdr.magic = MSG_MAGIC;
+        hdr.type = MessageType::ENROLL_REQUEST;
         hdr.bodyLength = static_cast<uint32_t>(sizeof(EnrollRequest) + totalPayload);
-        hdr.version    = MSG_VERSION;
+        hdr.version = MSG_VERSION;
 
         sendAll(ssl, &hdr, sizeof(hdr));
         sendAll(ssl, &req, sizeof(req));
@@ -257,22 +209,22 @@ EnrollResult ServerClient::enroll(const std::string&                            
         MessageHeader respHdr{};
         recvAll(ssl, &respHdr, sizeof(respHdr));
         if (respHdr.magic != MSG_MAGIC)
-            throw std::runtime_error("enroll: bad magic in response");
+            throw runtime_error("enroll: bad magic in response");
 
         if (respHdr.type == MessageType::ERROR_RESPONSE) {
             ErrorResponse err{};
             recvAll(ssl, &err, sizeof(err));
-            result.message = std::string(err.message,
+            result.message = string(err.message,
                                          strnlen(err.message, sizeof(err.message)));
         } else if (respHdr.type == MessageType::ENROLL_RESPONSE) {
             EnrollResponse resp{};
             recvAll(ssl, &resp, sizeof(resp));
-            result.success   = (resp.success == 1);
+            result.success = (resp.success == 1);
             result.newUserID = resp.newUserID;
-            result.message   = std::string(resp.message,
+            result.message = string(resp.message,
                                             strnlen(resp.message, sizeof(resp.message)));
         } else {
-            throw std::runtime_error("enroll: unexpected response type");
+            throw runtime_error("enroll: unexpected response type");
         }
     }
     catch (const std::exception& e) {
@@ -298,7 +250,6 @@ AuthResponse ServerClient::verify(
     const vector<vector<uint8_t>>& encryptedRight) const
 {
     AuthResponse resp;
-
     if (gateName.empty()) {
         resp.message = "verify: gate name is required";
         return resp;
@@ -312,13 +263,13 @@ AuthResponse ServerClient::verify(
     SSL* ssl = nullptr;
     try {
         ssl = connectToServer();
-        //מכניס את הפרמטרים לבקשה
+        // בניית VerifyRequest לשתי עיניים בפנייה אחת
         VerifyRequest req{};
-        strncpy(req.passengerID, passengerID.c_str(), sizeof(req.passengerID) - 1);
-        strncpy(req.gateName,    gateName.c_str(),    sizeof(req.gateName)    - 1);
+        std::strncpy(req.passengerID, passengerID.c_str(), sizeof(req.passengerID) - 1);
+        std::strncpy(req.gateName,    gateName.c_str(),    sizeof(req.gateName)    - 1);
         req.numLeftImages  = static_cast<uint8_t>(encryptedLeft.size());
         req.numRightImages = static_cast<uint8_t>(encryptedRight.size());
-        memcpy(req.iv, iv, 16);
+        std::memcpy(req.iv, iv, 16);
         // הגדרת timestamp ו-nonce למניעת Replay Attacks
         req.timestamp = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::seconds>(
@@ -345,7 +296,7 @@ AuthResponse ServerClient::verify(
         hdr.bodyLength = bodyLen;
         hdr.version    = MSG_VERSION;
 
-        // שולחים כותרת + struct + כל ה-ciphertext של שתי העיניים בפנייה אחת
+        // שולחים כותרת + VerifyRequest + כל התמונות (שתי עיניים)
         sendAll(ssl, &hdr, sizeof(hdr));
         sendAll(ssl, &req, sizeof(req));
         for (const auto& img : encryptedLeft)
@@ -368,8 +319,7 @@ AuthResponse ServerClient::verify(
         } else if (respHdr.type == MessageType::VERIFY_RESPONSE) {
             VerifyResponse v{};
             recvAll(ssl, &v, sizeof(v));
-            resp.status = (v.success == 1) ? AuthStatus::AUTHORIZED
-                                                  : AuthStatus::DENIED;
+            resp.status = (v.success == 1) ? AuthStatus::AUTHORIZED : AuthStatus::DENIED;
             resp.hammingDist   = v.hammingDist;
             resp.matchedUserID = v.matchedUserID;
             resp.matchedName = string(v.matchedName, strnlen(v.matchedName, sizeof(v.matchedName)));
@@ -394,4 +344,4 @@ AuthResponse ServerClient::verify(
     return resp;
 }
 
-} // namespace iris
+} 
